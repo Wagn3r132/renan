@@ -44,6 +44,16 @@ CRIADOR_ID = None  # preencha com seu ID de usuário quando quiser restringir co
 
 COR_RENAN = 0xB5121B  # vermelho — cor usada nos embeds do Renan
 
+# Canal fixo de boas-vindas
+CANAL_BOAS_VINDAS_ID = 1501260060783939775
+
+# Imagem enviada logo após o embed de boas-vindas
+IMAGEM_BOAS_VINDAS = (
+    "https://cdn.discordapp.com/attachments/926913851172204577/"
+    "1536131063590551683/ChatGPT_Image_9_de_ago._de_2026_18_48_17.png"
+    "?ex=6a7a4909&is=6a78f789&hm=965e75399d6ff5c0f76ad0babd9164928f557705606e41045f521d3a781e5875"
+)
+
 
 # ══════════════════════════════════════════════════════════════════════
 # PERSONALIDADE
@@ -89,6 +99,7 @@ FRASES_PROVOCACAO = [
 FRASES_BOAS_VINDAS = [
     "chegou. Eu sou Renan — o que sobrou de um mundo que não existe mais. Fica à vontade. Eu vou estar por aqui, observando.",
     "Mais um. Eu sou Renan. Não fazemos festa aqui, mas seja bem-vindo assim mesmo.",
+    "Mais um sinal de vida chegando nessa realidade. Eu sou Renan. Fica. Eu não vou a lugar nenhum.",
 ]
 
 _COOLDOWN_SEGUNDOS = 15
@@ -797,13 +808,25 @@ async def on_command_error(ctx, error):
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    """Boas-vindas simples no canal padrão do servidor (system channel).
-    Nenhum canal específico configurado ainda de propósito."""
-    canal = member.guild.system_channel
+    """Boas-vindas no canal dedicado, no estilo frio e distante do Renan:
+    embed com avatar do membro + contagem do servidor, seguido da imagem
+    de boas-vindas."""
+    canal = member.guild.get_channel(CANAL_BOAS_VINDAS_ID)
     if canal is None:
         return
+
+    embed = discord.Embed(
+        title="👽 Mais um sinal de vida chegou",
+        description=f"{member.mention} {random.choice(FRASES_BOAS_VINDAS)}",
+        color=COR_RENAN,
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="Agora somos", value=f"{member.guild.member_count} por aqui", inline=True)
+    embed.set_footer(text="Renan está observando.")
+
     try:
-        await canal.send(f"{member.mention} {random.choice(FRASES_BOAS_VINDAS)}")
+        await canal.send(embed=embed)
+        await canal.send(IMAGEM_BOAS_VINDAS)
     except discord.HTTPException:
         pass
 
