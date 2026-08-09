@@ -678,8 +678,18 @@ async def _enfileirar_playlist(guild, canal_voz, canal_texto, autor, link: str) 
 async def _processar_link_solto(message: discord.Message) -> None:
     """Se a mensagem tiver um link de música solto (sem usar !tocar) e o
     autor estiver numa call, bota na fila sozinho."""
+    if message.guild is None:
+        return  # DM não tem estado de voz (message.author aqui é User, não Member)
+
     if message.author.voice is None or message.author.voice.channel is None:
         return  # ninguém numa call, ignora silenciosamente
+
+    # Se a mensagem já é um comando válido (ex.: "!tocar <link>"), quem
+    # enfileira é o próprio handler do comando — sem esse check, a mesma
+    # música (ou playlist inteira) acaba entrando na fila DUAS vezes.
+    ctx = await bot.get_context(message)
+    if ctx.valid:
+        return
 
     encontrado = _REGEX_LINK_MUSICA.search(message.content)
     if not encontrado:
