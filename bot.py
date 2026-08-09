@@ -3,6 +3,7 @@ from discord.ext import commands
 import random
 import os
 import re
+import json
 import time
 import asyncio
 
@@ -759,6 +760,295 @@ async def cmd_sair(ctx):
     await ctx.send("Música parada. Fila limpa. Eu fui.")
 
 
+# ══════════════════════════════════════════════════════════════════
+# CARGOS POR REAÇÃO
+#
+# Ao iniciar, o Renan garante que todos os cargos abaixo existem (cria
+# quem faltar) e publica/atualiza um painel por categoria no canal
+# CANAL_CARGOS_ID. Reagir com o emoji dá o cargo; tirar a reação tira
+# o cargo — funciona mesmo depois de reiniciar o bot (raw events).
+#
+# Os IDs das mensagens dos painéis ficam salvos em disco (pensado pra
+# Railway: Volume montado em /data) pra não duplicar o painel a cada
+# restart, só atualizar o que já existe.
+#
+# Requisito: o cargo do bot precisa estar ACIMA de todos esses cargos
+# na hierarquia do servidor e ter permissão de "Gerenciar Cargos".
+# ══════════════════════════════════════════════════════════════════
+
+CANAL_CARGOS_ID = 1501260060783939777
+
+_CARGOS_DATA_PATH = os.getenv("CARGOS_DATA_PATH", "/data/cargos_reacao.json")
+
+# chave -> {titulo, descricao, cargos: [(emoji, nome, cor_hex_ou_None), ...]}
+# cor_hex só é usada no painel "cores" (cor de verdade no cargo); nos
+# outros painéis o cargo fica com a cor padrão do servidor.
+PAINEIS_CARGOS = {
+    "cores": {
+        "titulo": "🎨 Cores",
+        "descricao": (
+            "Escolha a cor do seu nome aqui embaixo. Reaja com o emoji "
+            "certo pra pegar o cargo — tire a reação e ele sai."
+        ),
+        "cargos": [
+            ("❤️", "Vermelho", 0xE74C3C),
+            ("🧡", "Laranja", 0xE67E22),
+            ("💛", "Amarelo", 0xF1C40F),
+            ("💚", "Verde", 0x2ECC71),
+            ("💙", "Azul", 0x3498DB),
+            ("💜", "Roxo", 0x9B59B6),
+            ("🖤", "Preto", 0x1B1B1B),
+            ("🤍", "Branco", 0xFFFFFF),
+        ],
+    },
+    "verificacao": {
+        "titulo": "🚹 Verificação",
+        "descricao": "Verificação básica: sexo, idade e de onde você acessa o servidor.",
+        "cargos": [
+            ("🚹", "Menino", None),
+            ("🚺", "Menina", None),
+            ("🧒", "-18", None),
+            ("🔞", "+18", None),
+            ("💻", "Computador", None),
+            ("📱", "Celular", None),
+        ],
+    },
+    # seção "2." não veio com nenhum cargo/emoji no pedido original —
+    # avise o que deveria entrar aqui e eu adiciono.
+    "genero": {
+        "titulo": "⚧️ Gênero",
+        "descricao": "Marque como você se identifica.",
+        "cargos": [
+            ("👧", "Menina", None),
+            ("👦", "Menino", None),
+            ("❔", "Prefiro Não Dizer", None),
+        ],
+    },
+    "sexualidade": {
+        "titulo": "🏳️‍🌈 Sexualidade",
+        "descricao": "Marque sua orientação, se quiser dizer.",
+        "cargos": [
+            ("👫", "Hétero", None),
+            ("🏳️‍🌈", "LGBTQI+", None),
+            ("❓", "Prefiro Não Dizer", None),
+        ],
+    },
+    "aniversario": {
+        "titulo": "🎂 Aniversário",
+        "descricao": "Marque o mês do seu aniversário.",
+        "cargos": [
+            ("🎆", "Janeiro", None),
+            ("💘", "Fevereiro", None),
+            ("🍀", "Março", None),
+            ("🐣", "Abril", None),
+            ("🌷", "Maio", None),
+            ("🌽", "Junho", None),
+            ("☀️", "Julho", None),
+            ("🎈", "Agosto", None),
+            ("🍃", "Setembro", None),
+            ("🎃", "Outubro", None),
+            ("🍁", "Novembro", None),
+            ("🎄", "Dezembro", None),
+        ],
+    },
+    "gravacoes": {
+        "titulo": "🎬 Gravações",
+        "descricao": "Diz se você participa de gravações do servidor ou não.",
+        "cargos": [
+            ("🎬", "Participa de Gravações", None),
+            ("🚫", "Não Participa de Gravações", None),
+        ],
+    },
+    "dispositivo": {
+        "titulo": "📱 Dispositivo",
+        "descricao": "De onde você acessa o servidor.",
+        "cargos": [
+            ("📱", "Mobile", None),
+            ("💻", "Pc", None),
+            ("🎮", "Console", None),
+        ],
+    },
+    "pings": {
+        "titulo": "🔔 Pings",
+        "descricao": "Escolha quais avisos você quer receber. Reaja pra ativar, tire pra desativar.",
+        "cargos": [
+            ("🗳️", "Ping Votação", None),
+            ("📰", "Ping Jornal", None),
+            ("🚨", "Ping Avisos", None),
+            ("🤝", "Ping Parceria", None),
+            ("🐦", "Tweeter", None),
+            ("📸", "Instagram", None),
+            ("👾", "Twitch", None),
+            ("🎥", "Videos Novos", None),
+            ("👻", "Fantasma", None),
+            ("⛓️", "Cadeia", None),
+            ("😶", "Mute", None),
+        ],
+    },
+}
+
+# mensagem_id -> {emoji: cargo_id}  — montado em runtime na configuração
+_CARGOS_POR_MENSAGEM: dict = {}
+
+
+def _carregar_dados_cargos() -> dict:
+    try:
+        with open(_CARGOS_DATA_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _salvar_dados_cargos(dados: dict) -> None:
+    try:
+        pasta = os.path.dirname(_CARGOS_DATA_PATH)
+        if pasta:
+            os.makedirs(pasta, exist_ok=True)
+        with open(_CARGOS_DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        print(f"[renan-cargos] não consegui salvar {_CARGOS_DATA_PATH}: {e!r}")
+
+
+def _nome_cargo(emoji: str, nome: str) -> str:
+    return f"『{emoji}』{nome}"
+
+
+async def _garantir_cargo(guild: discord.Guild, nome_completo: str, cor_hex) -> discord.Role:
+    """Acha o cargo pelo nome exato (evita duplicar entre restarts) ou
+    cria se ainda não existir."""
+    cargo = discord.utils.get(guild.roles, name=nome_completo)
+    if cargo is not None:
+        return cargo
+
+    cor = discord.Colour(cor_hex) if cor_hex is not None else discord.Colour.default()
+    return await guild.create_role(
+        name=nome_completo, colour=cor, reason="Painel de cargos por reação (Renan)"
+    )
+
+
+async def _publicar_ou_atualizar_painel(
+    guild: discord.Guild, canal: discord.TextChannel, chave: str, definicao: dict, dados_guild: dict
+):
+    """Garante os cargos do painel, monta o embed e publica ou atualiza
+    a mensagem — reaproveita a mesma mensagem entre restarts (o ID fica
+    salvo em disco)."""
+    emoji_para_cargo: dict = {}
+    linhas = []
+
+    for emoji, nome_cargo, cor_hex in definicao["cargos"]:
+        nome_completo = _nome_cargo(emoji, nome_cargo)
+        cargo = await _garantir_cargo(guild, nome_completo, cor_hex)
+        emoji_para_cargo[emoji] = cargo.id
+        linhas.append(f"{emoji}  {cargo.mention}")
+
+    embed = discord.Embed(
+        title=definicao["titulo"],
+        description=f"{definicao['descricao']}\n\n" + "\n".join(linhas),
+        color=COR_RENAN,
+    )
+    embed.set_footer(text="👽 Reaja pra pegar o cargo  •  tire a reação pra perder")
+
+    info_salva = dados_guild.get(chave)
+    mensagem = None
+    if info_salva and info_salva.get("mensagem_id"):
+        try:
+            mensagem = await canal.fetch_message(info_salva["mensagem_id"])
+            await mensagem.edit(embed=embed)
+        except (discord.NotFound, discord.HTTPException):
+            mensagem = None
+
+    if mensagem is None:
+        mensagem = await canal.send(embed=embed)
+
+    reacoes_atuais = {str(r.emoji) for r in mensagem.reactions}
+    for emoji in emoji_para_cargo:
+        if emoji not in reacoes_atuais:
+            try:
+                await mensagem.add_reaction(emoji)
+            except discord.HTTPException as e:
+                print(f"[renan-cargos] não consegui reagir com {emoji} em '{chave}': {e!r}")
+
+    return mensagem, emoji_para_cargo
+
+
+async def _configurar_cargos_reacao() -> None:
+    """Roda quando o bot conecta: garante cargos + painéis publicados
+    e atualizados no canal configurado."""
+    canal = bot.get_channel(CANAL_CARGOS_ID)
+    if canal is None:
+        print(f"[renan-cargos] canal {CANAL_CARGOS_ID} não encontrado — pulei a configuração de cargos.")
+        return
+
+    guild = canal.guild
+    dados = _carregar_dados_cargos()
+    dados_guild = dados.get(str(guild.id), {})
+
+    for chave, definicao in PAINEIS_CARGOS.items():
+        try:
+            mensagem, emoji_para_cargo = await _publicar_ou_atualizar_painel(
+                guild, canal, chave, definicao, dados_guild
+            )
+        except discord.Forbidden:
+            print(
+                f"[renan-cargos] sem permissão (Gerenciar Cargos / Enviar Mensagens) "
+                f"pra configurar o painel '{chave}'."
+            )
+            continue
+
+        dados_guild[chave] = {"mensagem_id": mensagem.id}
+        _CARGOS_POR_MENSAGEM[mensagem.id] = emoji_para_cargo
+
+    dados[str(guild.id)] = dados_guild
+    _salvar_dados_cargos(dados)
+    print(f"[renan-cargos] {len(PAINEIS_CARGOS)} painel(éis) de cargos configurado(s) em #{canal.name}.")
+
+
+async def _aplicar_reacao_cargo(payload: discord.RawReactionActionEvent, adicionar: bool) -> None:
+    if payload.user_id == bot.user.id:
+        return  # ignora a própria reação do bot (usada só pra montar o painel)
+
+    mapa = _CARGOS_POR_MENSAGEM.get(payload.message_id)
+    if mapa is None:
+        return
+
+    cargo_id = mapa.get(str(payload.emoji))
+    if cargo_id is None:
+        return
+
+    guild = bot.get_guild(payload.guild_id)
+    if guild is None:
+        return
+    cargo = guild.get_role(cargo_id)
+    if cargo is None:
+        return
+
+    membro = payload.member or guild.get_member(payload.user_id)
+    if membro is None:
+        try:
+            membro = await guild.fetch_member(payload.user_id)
+        except discord.HTTPException:
+            return
+
+    try:
+        if adicionar:
+            await membro.add_roles(cargo, reason="Cargo por reação")
+        else:
+            await membro.remove_roles(cargo, reason="Cargo por reação")
+    except discord.Forbidden:
+        print(f"[renan-cargos] sem permissão pra alterar o cargo '{cargo.name}' de {membro}.")
+
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    await _aplicar_reacao_cargo(payload, adicionar=True)
+
+
+@bot.event
+async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+    await _aplicar_reacao_cargo(payload, adicionar=False)
+
+
 # ══════════════════════════════════════════════
 # COMANDOS GERAIS
 # ══════════════════════════════════════════════
@@ -797,6 +1087,14 @@ async def cmd_ajuda(ctx):
         inline=False,
     )
     embed.add_field(
+        name="🎭 Cargos",
+        value=(
+            f"Painéis de cargos por reação em <#{CANAL_CARGOS_ID}> — "
+            "reaja pra pegar, tire a reação pra perder."
+        ),
+        inline=False,
+    )
+    embed.add_field(
         name="👽 Sobre",
         value="`!sobre` — quem eu sou, se você não sabia",
         inline=False,
@@ -809,6 +1107,9 @@ async def cmd_ajuda(ctx):
 # EVENTOS
 # ══════════════════════════════════════════════
 
+_cargos_configurados = False
+
+
 @bot.event
 async def on_ready():
     print(f"[Renan] conectado como {bot.user} ({bot.user.id})")
@@ -818,6 +1119,14 @@ async def on_ready():
         )
     except discord.HTTPException:
         pass
+
+    global _cargos_configurados
+    if not _cargos_configurados:
+        try:
+            await _configurar_cargos_reacao()
+        except Exception as e:
+            print(f"[renan-cargos] erro ao configurar cargos: {e!r}")
+        _cargos_configurados = True  # não repete a cada reconexão, só na 1ª vez
 
 
 @bot.event
