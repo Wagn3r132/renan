@@ -177,13 +177,25 @@ async def _checar_personalidade(message: discord.Message) -> None:
 # Também dá pra só colar um link no chat (sem !tocar) estando numa call.
 # ══════════════════════════════════════════════════════════════════
 
+# IP de datacenter (Railway, VPS, etc.) costuma ser bloqueado pelo YouTube
+# com "Sign in to confirm you're not a bot". Forçar o cliente "android"
+# (e cair pro "web" se ele falhar) contorna isso na maioria dos casos, sem
+# precisar de cookies. Se ainda assim continuar bloqueando, dá pra apontar
+# um arquivo de cookies exportado de uma conta logada via a variável de
+# ambiente YTDLP_COOKIES_FILE (ex.: /data/cookies.txt, se tiver Volume).
+_YTDLP_EXTRACTOR_ARGS = {"youtube": {"player_client": ["android", "web"]}}
+_YTDLP_COOKIES_FILE = os.getenv("YTDLP_COOKIES_FILE")
+
 _YDL_OPTS_TOCAR = {
     "format": "bestaudio/best",
     "quiet": True,
     "no_warnings": True,
     "noplaylist": True,  # aqui sempre é UMA faixa só — playlists usam _YDL_OPTS_PLAYLIST_FLAT
     "default_search": "ytsearch",  # se não vier link, busca no YouTube
+    "extractor_args": _YTDLP_EXTRACTOR_ARGS,
 }
+if _YTDLP_COOKIES_FILE:
+    _YDL_OPTS_TOCAR["cookiefile"] = _YTDLP_COOKIES_FILE
 
 # Extração "flat" pra listar as faixas de uma playlist/álbum/set rapidinho
 # (só título + link de cada uma; o áudio de cada faixa só é resolvido de
@@ -193,7 +205,10 @@ _YDL_OPTS_PLAYLIST_FLAT = {
     "quiet": True,
     "no_warnings": True,
     "skip_download": True,
+    "extractor_args": _YTDLP_EXTRACTOR_ARGS,
 }
+if _YTDLP_COOKIES_FILE:
+    _YDL_OPTS_PLAYLIST_FLAT["cookiefile"] = _YTDLP_COOKIES_FILE
 
 # Opções do FFmpeg para stream remoto
 _FFMPEG_OPTS = {
