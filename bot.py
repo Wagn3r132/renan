@@ -1543,7 +1543,7 @@ async def _registrar_feedback(
         inline=False,
     )
     icone_guild = interaction.guild.icon.url if interaction.guild and interaction.guild.icon else None
-    embed.set_footer(text="Caiu na Realidade • Feedback de Tickets", icon_url=icone_guild)
+    embed.set_footer(text="Feedback de Tickets", icon_url=icone_guild)
 
     canal_destino = bot.get_channel(CANAL_FEEDBACK_ID) if CANAL_FEEDBACK_ID else None
     if canal_destino is not None:
