@@ -52,9 +52,17 @@ CANAL_REGRAS_ID = 1501260060783939776
 # de cargos por reação — reaproveitado aqui na mensagem de boas-vindas.
 
 # ── Sistema de tickets de atendimento (preencha com os IDs reais) ──
-CANAL_PAINEL_TICKET_ID = None   # canal onde fica fixado o painel com o botão "Abrir Ticket"
+CANAL_PAINEL_TICKET_ID = 1501260061358559392   # canal onde fica fixado o painel com o botão "Abrir Ticket"
 CATEGORIA_TICKETS_ID = 1501260061358559391  # categoria onde os canais de ticket são criados
-CARGO_STAFF_ID = None           # cargo que enxerga e atende os tickets abertos
+CARGOS_STAFF_IDS = [    # cargos que enxergam e atendem os tickets abertos
+    1501260059177648294,
+    1501260059177648295,
+    1501260059177648297,
+    1501260059177648298,
+    1501260059185774672,
+    1501260059185774673,
+    1501260059185774674,  # owner
+]
 
 # Imagem usada no embed de boas-vindas (banner grande, junto com o texto)
 IMAGEM_BOAS_VINDAS = (
@@ -1144,7 +1152,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 #
 # Painel fixo (embed + botão "🎫 Abrir Ticket") no canal
 # CANAL_PAINEL_TICKET_ID. Quem clicar ganha um canal privado só seu
-# dentro de CATEGORIA_TICKETS_ID, visível pra você e pro CARGO_STAFF_ID.
+# dentro de CATEGORIA_TICKETS_ID, visível pra você e pros CARGOS_STAFF_IDS.
 # Dentro do ticket tem um botão "🔒 Fechar Ticket" que apaga o canal.
 #
 # Views persistentes (custom_id fixo) — sobrevivem a restart do bot,
@@ -1227,7 +1235,10 @@ async def _abrir_ticket(interaction: discord.Interaction) -> None:
         abertos.pop(str(interaction.user.id), None)  # canal antigo sumiu — libera
 
     categoria = guild.get_channel(CATEGORIA_TICKETS_ID) if CATEGORIA_TICKETS_ID else None
-    cargo_staff = guild.get_role(CARGO_STAFF_ID) if CARGO_STAFF_ID else None
+    cargos_staff = [
+        cargo for cargo_id in CARGOS_STAFF_IDS
+        if (cargo := guild.get_role(cargo_id)) is not None
+    ]
 
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -1238,7 +1249,7 @@ async def _abrir_ticket(interaction: discord.Interaction) -> None:
             view_channel=True, send_messages=True, manage_channels=True
         ),
     }
-    if cargo_staff is not None:
+    for cargo_staff in cargos_staff:
         overwrites[cargo_staff] = discord.PermissionOverwrite(
             view_channel=True, send_messages=True, read_message_history=True
         )
@@ -1274,9 +1285,9 @@ async def _abrir_ticket(interaction: discord.Interaction) -> None:
     )
     embed.set_footer(text="👽 Renan  •  clique em Fechar Ticket quando resolver")
 
-    mencao_staff = cargo_staff.mention if cargo_staff is not None else ""
+    mencoes_staff = " ".join(cargo.mention for cargo in cargos_staff)
     await canal_ticket.send(
-        content=f"{interaction.user.mention} {mencao_staff}".strip(),
+        content=f"{interaction.user.mention} {mencoes_staff}".strip(),
         embed=embed,
         view=FecharTicket(),
     )
