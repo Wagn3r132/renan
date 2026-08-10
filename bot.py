@@ -51,11 +51,23 @@ CANAL_REGRAS_ID = 1501260060783939776
 # CANAL_CARGOS_ID (registro adicional) é definido mais abaixo, na seção
 # de cargos por reação — reaproveitado aqui na mensagem de boas-vindas.
 
+# ── Sistema de tickets de atendimento (preencha com os IDs reais) ──
+CANAL_PAINEL_TICKET_ID = None   # canal onde fica fixado o painel com o botão "Abrir Ticket"
+CATEGORIA_TICKETS_ID = 1501260061358559391  # categoria onde os canais de ticket são criados
+CARGO_STAFF_ID = None           # cargo que enxerga e atende os tickets abertos
+
 # Imagem usada no embed de boas-vindas (banner grande, junto com o texto)
 IMAGEM_BOAS_VINDAS = (
     "https://cdn.discordapp.com/attachments/926913851172204577/"
     "1536156672064749598/ChatGPT_Image_9_de_ago._de_2026_20_37_57.png"
     "?ex=6a7a60e3&is=6a790f63&hm=8f17879426924441d6b7bd081016a1d7583500f7d01f1a8611c3aabba645ad06"
+)
+
+# Imagem usada no painel de tickets de atendimento
+IMAGEM_TICKET = (
+    "https://cdn.discordapp.com/attachments/926913851172204577/"
+    "1536200014827888680/ChatGPT_Image_9_de_ago._de_2026_23_30_09.png"
+    "?ex=6a7a8940&is=6a7937c0&hm=34987530726ddc9b2c61cbd25a66050e7285b4f392cfb8daa12ecf2a76c84098"
 )
 
 
@@ -1127,6 +1139,217 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
     await _aplicar_reacao_cargo(payload, adicionar=False)
 
 
+# ══════════════════════════════════════════════════════════════════
+# TICKETS DE ATENDIMENTO
+#
+# Painel fixo (embed + botão "🎫 Abrir Ticket") no canal
+# CANAL_PAINEL_TICKET_ID. Quem clicar ganha um canal privado só seu
+# dentro de CATEGORIA_TICKETS_ID, visível pra você e pro CARGO_STAFF_ID.
+# Dentro do ticket tem um botão "🔒 Fechar Ticket" que apaga o canal.
+#
+# Views persistentes (custom_id fixo) — sobrevivem a restart do bot,
+# igual aos painéis de cargos e regras. Estado (mensagem do painel,
+# contador, quem tem ticket aberto) fica salvo em disco.
+# ══════════════════════════════════════════════════════════════════
+
+_TICKETS_DATA_PATH = os.getenv("TICKETS_DATA_PATH", "/data/tickets.json")
+
+
+def _carregar_dados_tickets() -> dict:
+    try:
+        with open(_TICKETS_DATA_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"painel_mensagem_id": None, "contador": 0, "abertos": {}}
+
+
+def _salvar_dados_tickets(dados: dict) -> None:
+    try:
+        pasta = os.path.dirname(_TICKETS_DATA_PATH)
+        if pasta:
+            os.makedirs(pasta, exist_ok=True)
+        with open(_TICKETS_DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        print(f"[renan-ticket] não consegui salvar {_TICKETS_DATA_PATH}: {e!r}")
+
+
+class PainelTicket(discord.ui.View):
+    """Botão fixo do painel de atendimento — abre um ticket novo pra
+    quem clicar (ou manda de volta pro ticket já aberto)."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Abrir Ticket",
+        emoji="🎫",
+        style=discord.ButtonStyle.danger,
+        custom_id="renan_ticket_abrir",
+    )
+    async def abrir(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _abrir_ticket(interaction)
+
+
+class FecharTicket(discord.ui.View):
+    """Botão dentro do canal do ticket — fecha e apaga o canal."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Fechar Ticket",
+        emoji="🔒",
+        style=discord.ButtonStyle.secondary,
+        custom_id="renan_ticket_fechar",
+    )
+    async def fechar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _fechar_ticket(interaction)
+
+
+async def _abrir_ticket(interaction: discord.Interaction) -> None:
+    guild = interaction.guild
+    if guild is None:
+        return
+
+    dados = _carregar_dados_tickets()
+    abertos = dados.setdefault("abertos", {})
+
+    # já tem ticket aberto? manda pra lá em vez de criar outro
+    canal_existente_id = abertos.get(str(interaction.user.id))
+    if canal_existente_id:
+        canal_existente = guild.get_channel(canal_existente_id)
+        if canal_existente is not None:
+            await interaction.response.send_message(
+                f"Você já tem um ticket aberto: {canal_existente.mention}", ephemeral=True
+            )
+            return
+        abertos.pop(str(interaction.user.id), None)  # canal antigo sumiu — libera
+
+    categoria = guild.get_channel(CATEGORIA_TICKETS_ID) if CATEGORIA_TICKETS_ID else None
+    cargo_staff = guild.get_role(CARGO_STAFF_ID) if CARGO_STAFF_ID else None
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        interaction.user: discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, read_message_history=True
+        ),
+        guild.me: discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, manage_channels=True
+        ),
+    }
+    if cargo_staff is not None:
+        overwrites[cargo_staff] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, read_message_history=True
+        )
+
+    dados["contador"] = dados.get("contador", 0) + 1
+    numero = dados["contador"]
+    nome_canal = f"ticket-{numero:04d}-{interaction.user.name}".lower()[:95]
+
+    try:
+        canal_ticket = await guild.create_text_channel(
+            name=nome_canal,
+            category=categoria,
+            overwrites=overwrites,
+            reason=f"Ticket de atendimento aberto por {interaction.user}",
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "Sem permissão pra criar o canal do ticket. Fala com a staff.", ephemeral=True
+        )
+        return
+
+    abertos[str(interaction.user.id)] = canal_ticket.id
+    _salvar_dados_tickets(dados)
+
+    embed = discord.Embed(
+        title="🎫 Atendimento aberto",
+        description=(
+            f"{interaction.user.mention} chegou. Descreve o que precisa — "
+            "alguém da staff vai aparecer.\n\n"
+            "Eu não prometo pressa. Só prometo que alguém vai ler."
+        ),
+        color=COR_RENAN,
+    )
+    embed.set_footer(text="👽 Renan  •  clique em Fechar Ticket quando resolver")
+
+    mencao_staff = cargo_staff.mention if cargo_staff is not None else ""
+    await canal_ticket.send(
+        content=f"{interaction.user.mention} {mencao_staff}".strip(),
+        embed=embed,
+        view=FecharTicket(),
+    )
+
+    await interaction.response.send_message(
+        f"Ticket criado: {canal_ticket.mention}", ephemeral=True
+    )
+
+
+async def _fechar_ticket(interaction: discord.Interaction) -> None:
+    canal = interaction.channel
+    guild = interaction.guild
+    if guild is None or canal is None:
+        return
+
+    dados = _carregar_dados_tickets()
+    abertos = dados.setdefault("abertos", {})
+    dono_id = next((uid for uid, cid in abertos.items() if cid == canal.id), None)
+    if dono_id:
+        abertos.pop(dono_id, None)
+        _salvar_dados_tickets(dados)
+
+    await interaction.response.send_message("Fechando em 5 segundos. Eu fui.")
+    await asyncio.sleep(5)
+    try:
+        await canal.delete(reason=f"Ticket fechado por {interaction.user}")
+    except discord.HTTPException:
+        pass
+
+
+async def _configurar_painel_ticket() -> None:
+    """Roda quando o bot conecta: publica ou atualiza o painel fixo
+    de abertura de tickets no canal configurado."""
+    if not CANAL_PAINEL_TICKET_ID:
+        print("[renan-ticket] CANAL_PAINEL_TICKET_ID não configurado — pulei o painel de atendimento.")
+        return
+
+    canal = bot.get_channel(CANAL_PAINEL_TICKET_ID)
+    if canal is None:
+        print(f"[renan-ticket] canal {CANAL_PAINEL_TICKET_ID} não encontrado — pulei o painel de atendimento.")
+        return
+
+    embed = discord.Embed(
+        title="🎫 Atendimento",
+        description=(
+            "Precisa falar com a staff? Clica no botão abaixo.\n\n"
+            "Um canal privado é criado só pra você — ninguém mais vê, "
+            "além de quem for te atender."
+        ),
+        color=COR_RENAN,
+    )
+    embed.set_image(url=IMAGEM_TICKET)
+    embed.set_footer(text="👽 Renan está observando. Vai ser rápido, eu acho.")
+
+    dados = _carregar_dados_tickets()
+    mensagem_id = dados.get("painel_mensagem_id")
+
+    if mensagem_id:
+        try:
+            mensagem = await canal.fetch_message(mensagem_id)
+            await mensagem.edit(embed=embed, view=PainelTicket())
+            return
+        except (discord.NotFound, discord.HTTPException):
+            pass  # mensagem antiga não existe mais — cria uma nova abaixo
+
+    try:
+        nova_mensagem = await canal.send(embed=embed, view=PainelTicket())
+        dados["painel_mensagem_id"] = nova_mensagem.id
+        _salvar_dados_tickets(dados)
+    except discord.Forbidden:
+        print(f"[renan-ticket] sem permissão pra enviar mensagem em #{canal.name}.")
+
+
 # ══════════════════════════════════════════════
 # COMANDOS GERAIS
 # ══════════════════════════════════════════════
@@ -1173,6 +1396,14 @@ async def cmd_ajuda(ctx):
         inline=False,
     )
     embed.add_field(
+        name="🎫 Atendimento",
+        value=(
+            f"Painel de tickets em <#{CANAL_PAINEL_TICKET_ID}> — clique em "
+            "**Abrir Ticket** pra falar com a staff em particular."
+        ),
+        inline=False,
+    )
+    embed.add_field(
         name="👽 Sobre",
         value="`!sobre` — quem eu sou, se você não sabia",
         inline=False,
@@ -1208,6 +1439,12 @@ async def on_ready():
             await _configurar_regras()
         except Exception as e:
             print(f"[renan-regras] erro ao configurar regras: {e!r}")
+        try:
+            bot.add_view(PainelTicket())   # registra os botões como persistentes
+            bot.add_view(FecharTicket())   # (funcionam mesmo depois de reiniciar o bot)
+            await _configurar_painel_ticket()
+        except Exception as e:
+            print(f"[renan-ticket] erro ao configurar painel de atendimento: {e!r}")
         _cargos_configurados = True  # não repete a cada reconexão, só na 1ª vez
 
 
