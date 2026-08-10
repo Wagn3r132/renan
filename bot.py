@@ -819,6 +819,7 @@ async def _configurar_regras() -> None:
         ),
         color=COR_RENAN,
     )
+    embed.set_image(url=IMAGEM_BOAS_VINDAS)
     embed.set_footer(text="Renan está observando. As regras também.")
 
     mensagem_id = _carregar_regras_msg_id()
