@@ -6,6 +6,7 @@ import re
 import json
 import time
 import asyncio
+from datetime import datetime
 
 try:
     import yt_dlp
@@ -54,6 +55,7 @@ CANAL_REGRAS_ID = 1501260060783939776
 # ── Sistema de tickets de atendimento (preencha com os IDs reais) ──
 CANAL_PAINEL_TICKET_ID = 1501260061358559392   # canal onde fica fixado o painel com o botão "Abrir Ticket"
 CATEGORIA_TICKETS_ID = 1501260061358559391  # categoria onde os canais de ticket são criados
+CANAL_FEEDBACK_ID = 1536202405887221901     # canal onde cai o feedback que a pessoa dá no final
 CARGOS_STAFF_IDS = [    # cargos que enxergam e atendem os tickets abertos
     1501260059177648294,
     1501260059177648295,
@@ -76,6 +78,13 @@ IMAGEM_TICKET = (
     "https://cdn.discordapp.com/attachments/926913851172204577/"
     "1536200014827888680/ChatGPT_Image_9_de_ago._de_2026_23_30_09.png"
     "?ex=6a7a8940&is=6a7937c0&hm=34987530726ddc9b2c61cbd25a66050e7285b4f392cfb8daa12ecf2a76c84098"
+)
+
+# Imagem usada nas instruções de como deixar feedback do atendimento
+IMAGEM_FEEDBACK = (
+    "https://cdn.discordapp.com/attachments/926913851172204577/"
+    "1536203692426928168/ChatGPT_Image_9_de_ago._de_2026_23_44_47.png"
+    "?ex=6a7a8cad&is=6a793b2d&hm=801d38713fb9f51d2147a2a98d9e2cdf9dc7203b0be0ecb2e48876e187dffb74"
 )
 
 
@@ -1153,11 +1162,20 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 # Painel fixo (embed + botão "🎫 Abrir Ticket") no canal
 # CANAL_PAINEL_TICKET_ID. Quem clicar ganha um canal privado só seu
 # dentro de CATEGORIA_TICKETS_ID, visível pra você e pros CARGOS_STAFF_IDS.
-# Dentro do ticket tem um botão "🔒 Fechar Ticket" que apaga o canal.
+# Dentro do ticket tem um botão "🔒 Fechar Ticket" — SÓ A STAFF pode
+# usar, e ao fechar é pedido o motivo do encerramento.
+#
+# FEEDBACK: a staff usa `!feedback` dentro do ticket (antes de fechar)
+# pra mandar, no próprio canal, um botão "⭐ Avaliar Atendimento" com
+# instruções de como preencher certinho (nota 1-5, experiência,
+# comentário) — o dono do ticket é marcado na mensagem. Quando a
+# pessoa preenche, o resultado — junto com quem fechou, quem atendeu
+# e o motivo do encerramento — cai automaticamente em CANAL_FEEDBACK_ID.
 #
 # Views persistentes (custom_id fixo) — sobrevivem a restart do bot,
 # igual aos painéis de cargos e regras. Estado (mensagem do painel,
-# contador, quem tem ticket aberto) fica salvo em disco.
+# contador, quem tem ticket aberto, feedbacks pendentes) fica salvo
+# em disco.
 # ══════════════════════════════════════════════════════════════════
 
 _TICKETS_DATA_PATH = os.getenv("TICKETS_DATA_PATH", "/data/tickets.json")
@@ -1166,9 +1184,14 @@ _TICKETS_DATA_PATH = os.getenv("TICKETS_DATA_PATH", "/data/tickets.json")
 def _carregar_dados_tickets() -> dict:
     try:
         with open(_TICKETS_DATA_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+            dados = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"painel_mensagem_id": None, "contador": 0, "abertos": {}}
+        dados = {}
+    dados.setdefault("painel_mensagem_id", None)
+    dados.setdefault("contador", 0)
+    dados.setdefault("abertos", {})
+    dados.setdefault("pendentes_feedback", {})
+    return dados
 
 
 def _salvar_dados_tickets(dados: dict) -> None:
@@ -1180,6 +1203,16 @@ def _salvar_dados_tickets(dados: dict) -> None:
             json.dump(dados, f, ensure_ascii=False, indent=2)
     except OSError as e:
         print(f"[renan-ticket] não consegui salvar {_TICKETS_DATA_PATH}: {e!r}")
+
+
+def _e_staff(membro: discord.Member) -> bool:
+    """Dono do servidor, administrador ou algum dos CARGOS_STAFF_IDS."""
+    if membro.guild_permissions.administrator:
+        return True
+    if membro.id == membro.guild.owner_id:
+        return True
+    ids_dos_cargos = {cargo.id for cargo in membro.roles}
+    return bool(ids_dos_cargos.intersection(CARGOS_STAFF_IDS))
 
 
 class PainelTicket(discord.ui.View):
@@ -1199,8 +1232,28 @@ class PainelTicket(discord.ui.View):
         await _abrir_ticket(interaction)
 
 
+class ModalMotivoEncerramento(discord.ui.Modal, title="Fechar Ticket"):
+    """Pedido pelo motivo do encerramento — some junto com o feedback."""
+
+    motivo = discord.ui.TextInput(
+        label="Motivo do encerramento",
+        placeholder="Ex.: Concluído, Cancelado, Resolvido...",
+        default="Concluído",
+        max_length=100,
+        required=True,
+    )
+
+    def __init__(self, canal: discord.abc.GuildChannel):
+        super().__init__()
+        self.canal = canal
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await _finalizar_fechamento(interaction, self.canal, str(self.motivo))
+
+
 class FecharTicket(discord.ui.View):
-    """Botão dentro do canal do ticket — fecha e apaga o canal."""
+    """Botão dentro do canal do ticket — só a staff pode usar. Pede o
+    motivo do encerramento e depois apaga o canal."""
 
     def __init__(self):
         super().__init__(timeout=None)
@@ -1212,7 +1265,12 @@ class FecharTicket(discord.ui.View):
         custom_id="renan_ticket_fechar",
     )
     async def fechar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _fechar_ticket(interaction)
+        if not isinstance(interaction.user, discord.Member) or not _e_staff(interaction.user):
+            await interaction.response.send_message(
+                "Só a staff pode fechar um ticket.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(ModalMotivoEncerramento(interaction.channel))
 
 
 async def _abrir_ticket(interaction: discord.Interaction) -> None:
@@ -1297,25 +1355,206 @@ async def _abrir_ticket(interaction: discord.Interaction) -> None:
     )
 
 
-async def _fechar_ticket(interaction: discord.Interaction) -> None:
-    canal = interaction.channel
+async def _finalizar_fechamento(
+    interaction: discord.Interaction, canal: discord.abc.GuildChannel, motivo: str
+) -> None:
+    """Roda depois que a staff preenche o motivo no modal: libera o
+    ticket, grava quem fechou e o motivo (pro feedback, se houver um
+    pendente pra esse canal) e apaga o canal em seguida."""
     guild = interaction.guild
-    if guild is None or canal is None:
+    if guild is None:
         return
 
     dados = _carregar_dados_tickets()
     abertos = dados.setdefault("abertos", {})
+    pendentes = dados.setdefault("pendentes_feedback", {})
+
     dono_id = next((uid for uid, cid in abertos.items() if cid == canal.id), None)
     if dono_id:
         abertos.pop(dono_id, None)
-        _salvar_dados_tickets(dados)
 
-    await interaction.response.send_message("Fechando em 5 segundos. Eu fui.")
-    await asyncio.sleep(5)
+    chave = str(canal.id)
+    if chave in pendentes:
+        pendentes[chave]["fechado_por_id"] = interaction.user.id
+        pendentes[chave]["motivo_encerramento"] = motivo
+        pendentes[chave]["fechado_em"] = datetime.now().isoformat()
+
+    _salvar_dados_tickets(dados)
+
+    await interaction.response.send_message(
+        f"Ticket fechado. Motivo: **{motivo}**. Apagando o canal em instantes."
+    )
+    await asyncio.sleep(8)
     try:
-        await canal.delete(reason=f"Ticket fechado por {interaction.user}")
+        await canal.delete(reason=f"Ticket fechado por {interaction.user} — {motivo}")
     except discord.HTTPException:
         pass
+
+
+class ModalFeedback(discord.ui.Modal, title="Avaliação do Atendimento"):
+    """Aberto quando a pessoa clica em '⭐ Avaliar Atendimento'."""
+
+    nota = discord.ui.TextInput(
+        label="Nota (1 a 5)",
+        placeholder="Ex.: 5",
+        max_length=1,
+        required=True,
+    )
+    experiencia = discord.ui.TextInput(
+        label="Experiência",
+        placeholder="Ex.: Ótimo, Bom, Regular, Ruim",
+        max_length=60,
+        required=True,
+    )
+    comentario = discord.ui.TextInput(
+        label="Comentário",
+        style=discord.TextStyle.paragraph,
+        placeholder="Conta como foi, se quiser (opcional).",
+        max_length=500,
+        required=False,
+    )
+
+    def __init__(self, canal_id: int):
+        super().__init__()
+        self.canal_id = canal_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        nota_texto = self.nota.value.strip()
+        if not nota_texto.isdigit() or not (1 <= int(nota_texto) <= 5):
+            await interaction.response.send_message(
+                "A nota precisa ser um número de 1 a 5. Clica no botão de novo e tenta outra vez.",
+                ephemeral=True,
+            )
+            return
+        await _registrar_feedback(
+            interaction,
+            self.canal_id,
+            nota_texto,
+            str(self.experiencia),
+            str(self.comentario) if self.comentario.value else "—",
+        )
+
+
+class _ViewAvaliarAtendimento(discord.ui.View):
+    """Botão '⭐ Avaliar Atendimento' mandado no canal do ticket — só o
+    dono do ticket pode usar."""
+
+    def __init__(self, canal_id: int):
+        super().__init__(timeout=None)
+        self.canal_id = canal_id
+        botao = discord.ui.Button(
+            label="Avaliar Atendimento",
+            emoji="⭐",
+            style=discord.ButtonStyle.success,
+            custom_id=f"renan_feedback_avaliar:{canal_id}",
+        )
+        botao.callback = self._callback
+        self.add_item(botao)
+
+    async def _callback(self, interaction: discord.Interaction) -> None:
+        dados = _carregar_dados_tickets()
+        registro = dados.get("pendentes_feedback", {}).get(str(self.canal_id))
+        if registro is None:
+            await interaction.response.send_message(
+                "Esse pedido de feedback não existe mais.", ephemeral=True
+            )
+            return
+        if registro.get("enviado"):
+            await interaction.response.send_message(
+                "Esse feedback já foi enviado. Valeu.", ephemeral=True
+            )
+            return
+        if interaction.user.id != registro.get("dono_id"):
+            await interaction.response.send_message(
+                "Esse pedido de feedback não é seu pra preencher.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(ModalFeedback(self.canal_id))
+
+
+def _formatar_data(iso) -> str:
+    if not iso:
+        return "—"
+    try:
+        return datetime.fromisoformat(iso).strftime("%d/%m/%Y às %H:%M")
+    except ValueError:
+        return "—"
+
+
+async def _registrar_feedback(
+    interaction: discord.Interaction,
+    canal_id: int,
+    nota: str,
+    experiencia: str,
+    comentario: str,
+) -> None:
+    dados = _carregar_dados_tickets()
+    pendentes = dados.setdefault("pendentes_feedback", {})
+    registro = pendentes.get(str(canal_id))
+    if registro is None or registro.get("enviado"):
+        await interaction.response.send_message(
+            "Esse pedido de feedback já não está mais disponível.", ephemeral=True
+        )
+        return
+
+    registro["enviado"] = True
+    pendentes[str(canal_id)] = registro
+    _salvar_dados_tickets(dados)
+
+    embed = discord.Embed(
+        title="📋 Novo Feedback de Ticket",
+        description="Um usuário avaliou um atendimento finalizado.",
+        color=COR_RENAN,
+    )
+    embed.add_field(name="👤 Usuário", value=f"<@{registro['dono_id']}>", inline=False)
+    embed.add_field(name="⭐ Nota", value=f"{nota}/5", inline=False)
+    embed.add_field(name="📌 Experiência", value=experiencia, inline=False)
+    embed.add_field(name="💬 Comentário", value=comentario, inline=False)
+    embed.add_field(name="📂 Categoria", value="Atendimento", inline=False)
+    embed.add_field(
+        name="📌 Ticket",
+        value=f"#{registro.get('canal_nome', '—')}\nID: {registro.get('canal_id', '—')}",
+        inline=False,
+    )
+    fechado_por = registro.get("fechado_por_id")
+    embed.add_field(
+        name="🔒 Fechado por",
+        value=(f"<@{fechado_por}>" if fechado_por else "—"),
+        inline=False,
+    )
+    embed.add_field(
+        name="👤 Responsável pelo atendimento",
+        value=f"<@{registro['responsavel_atendimento_id']}>",
+        inline=False,
+    )
+    embed.add_field(
+        name="❓ Motivo do Encerramento",
+        value=registro.get("motivo_encerramento") or "—",
+        inline=False,
+    )
+    embed.add_field(
+        name="🕐 Data e hora do fechamento",
+        value=_formatar_data(registro.get("fechado_em")),
+        inline=False,
+    )
+    embed.add_field(
+        name="⏰ Feedback enviado em",
+        value=datetime.now().strftime("%d/%m/%Y às %H:%M"),
+        inline=False,
+    )
+    icone_guild = interaction.guild.icon.url if interaction.guild and interaction.guild.icon else None
+    embed.set_footer(text="FDN • Feedback de Tickets", icon_url=icone_guild)
+
+    canal_destino = bot.get_channel(CANAL_FEEDBACK_ID) if CANAL_FEEDBACK_ID else None
+    if canal_destino is not None:
+        try:
+            await canal_destino.send(embed=embed)
+        except discord.Forbidden:
+            print("[renan-feedback] sem permissão pra enviar mensagem no canal de feedback.")
+    else:
+        print("[renan-feedback] CANAL_FEEDBACK_ID não configurado ou canal não encontrado.")
+
+    await interaction.response.send_message("Feedback enviado. Valeu por avaliar.", ephemeral=True)
 
 
 async def _configurar_painel_ticket() -> None:
@@ -1359,6 +1598,61 @@ async def _configurar_painel_ticket() -> None:
         _salvar_dados_tickets(dados)
     except discord.Forbidden:
         print(f"[renan-ticket] sem permissão pra enviar mensagem em #{canal.name}.")
+
+
+@bot.command(name="feedback")
+async def cmd_feedback(ctx):
+    """(staff) Usado DENTRO de um ticket aberto, antes de fechar: manda
+    no próprio canal o botão + instruções de como avaliar o
+    atendimento certinho, marcando o dono do ticket."""
+    if ctx.guild is None:
+        return
+
+    if not _e_staff(ctx.author):
+        await ctx.send("Esse comando é só pra staff.")
+        return
+
+    dados = _carregar_dados_tickets()
+    abertos = dados.get("abertos", {})
+    dono_id = next((uid for uid, cid in abertos.items() if cid == ctx.channel.id), None)
+    if dono_id is None:
+        await ctx.send(
+            "Esse canal não é um ticket aberto — o `!feedback` só funciona "
+            "dentro do canal do ticket, antes de fechar."
+        )
+        return
+
+    pendentes = dados.setdefault("pendentes_feedback", {})
+    chave = str(ctx.channel.id)
+    pendentes[chave] = {
+        "dono_id": int(dono_id),
+        "canal_nome": ctx.channel.name,
+        "canal_id": ctx.channel.id,
+        "responsavel_atendimento_id": ctx.author.id,
+        "fechado_por_id": None,
+        "motivo_encerramento": None,
+        "fechado_em": None,
+        "enviado": False,
+    }
+    _salvar_dados_tickets(dados)
+
+    embed = discord.Embed(
+        title="⭐ Avalie seu atendimento",
+        description=(
+            f"<@{dono_id}>, antes de encerrarmos, deixa um feedback — "
+            "clica no botão abaixo e preenche certinho:\n\n"
+            "**Nota**: um número de 1 a 5\n"
+            "**Experiência**: em poucas palavras (ex.: Ótimo, Bom, Regular, Ruim)\n"
+            "**Comentário**: conta com mais detalhes, se quiser (opcional)\n\n"
+            "Não demora nada. Eu só registro — não julgo."
+        ),
+        color=COR_RENAN,
+    )
+    embed.set_image(url=IMAGEM_FEEDBACK)
+    embed.set_footer(text="👽 Renan  •  FDN – Filhos da Noite")
+
+    view = _ViewAvaliarAtendimento(ctx.channel.id)
+    await ctx.send(content=f"<@{dono_id}>", embed=embed, view=view)
 
 
 # ══════════════════════════════════════════════
@@ -1410,7 +1704,10 @@ async def cmd_ajuda(ctx):
         name="🎫 Atendimento",
         value=(
             f"Painel de tickets em <#{CANAL_PAINEL_TICKET_ID}> — clique em "
-            "**Abrir Ticket** pra falar com a staff em particular."
+            "**Abrir Ticket** pra falar com a staff em particular.\n"
+            "Só a staff pode clicar em **Fechar Ticket**.\n"
+            "`!feedback` (staff) — dentro de um ticket aberto, manda pro "
+            "dono o pedido de avaliação do atendimento."
         ),
         inline=False,
     )
@@ -1453,6 +1750,10 @@ async def on_ready():
         try:
             bot.add_view(PainelTicket())   # registra os botões como persistentes
             bot.add_view(FecharTicket())   # (funcionam mesmo depois de reiniciar o bot)
+            dados_tickets = _carregar_dados_tickets()
+            for chave, registro in dados_tickets.get("pendentes_feedback", {}).items():
+                if not registro.get("enviado"):
+                    bot.add_view(_ViewAvaliarAtendimento(int(chave)))
             await _configurar_painel_ticket()
         except Exception as e:
             print(f"[renan-ticket] erro ao configurar painel de atendimento: {e!r}")
