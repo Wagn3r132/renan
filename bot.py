@@ -1543,7 +1543,7 @@ async def _registrar_feedback(
         inline=False,
     )
     icone_guild = interaction.guild.icon.url if interaction.guild and interaction.guild.icon else None
-    embed.set_footer(text="FDN • Feedback de Tickets", icon_url=icone_guild)
+    embed.set_footer(text="Caiu na Realidade • Feedback de Tickets", icon_url=icone_guild)
 
     canal_destino = bot.get_channel(CANAL_FEEDBACK_ID) if CANAL_FEEDBACK_ID else None
     if canal_destino is not None:
@@ -1649,7 +1649,7 @@ async def cmd_feedback(ctx):
         color=COR_RENAN,
     )
     embed.set_image(url=IMAGEM_FEEDBACK)
-    embed.set_footer(text="👽 Renan  •  FDN – Filhos da Noite")
+    embed.set_footer(text="👽 Renan  •  Caiu na Realidade")
 
     view = _ViewAvaliarAtendimento(ctx.channel.id)
     await ctx.send(content=f"<@{dono_id}>", embed=embed, view=view)
