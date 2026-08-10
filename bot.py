@@ -764,6 +764,80 @@ async def cmd_sair(ctx):
 
 
 # ══════════════════════════════════════════════════════════════════
+# REGRAS
+#
+# Publica/atualiza a mensagem de regras automaticamente quando o bot
+# inicia — mesmo esquema dos painéis de cargos: guarda o ID da mensagem
+# em disco (Volume /data no Railway) pra não duplicar a cada restart,
+# só atualizar o conteúdo se ele mudar.
+# ══════════════════════════════════════════════════════════════════
+
+_REGRAS_DATA_PATH = os.getenv("REGRAS_DATA_PATH", "/data/regras_mensagem.json")
+
+# Texto de exemplo — troca pelo texto real das regras do servidor
+# quando tiver, eu atualizo aqui.
+REGRAS_SERVIDOR = [
+    "Respeito acima de tudo. Sem ataques pessoais, discurso de ódio, racismo, homofobia ou assédio de qualquer tipo.",
+    "Sem conteúdo NSFW fora de canal marcado como tal.",
+    "Sem spam, flood ou divulgação de outros servidores/produtos sem autorização da staff.",
+    "Siga também os Termos de Uso e as Diretrizes da Comunidade do Discord — valem aqui também.",
+    "A palavra da staff é final. Discordou de alguma decisão? Resolve em privado, sem fazer drama público.",
+]
+
+
+def _carregar_regras_msg_id():
+    try:
+        with open(_REGRAS_DATA_PATH, "r", encoding="utf-8") as f:
+            return json.load(f).get("mensagem_id")
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def _salvar_regras_msg_id(mensagem_id: int) -> None:
+    try:
+        pasta = os.path.dirname(_REGRAS_DATA_PATH)
+        if pasta:
+            os.makedirs(pasta, exist_ok=True)
+        with open(_REGRAS_DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump({"mensagem_id": mensagem_id}, f)
+    except OSError as e:
+        print(f"[renan-regras] não consegui salvar {_REGRAS_DATA_PATH}: {e!r}")
+
+
+async def _configurar_regras() -> None:
+    canal = bot.get_channel(CANAL_REGRAS_ID)
+    if canal is None:
+        print(f"[renan-regras] canal {CANAL_REGRAS_ID} não encontrado — pulei a publicação das regras.")
+        return
+
+    corpo = "\n\n".join(f"**{i + 1}.** {regra}" for i, regra in enumerate(REGRAS_SERVIDOR))
+    embed = discord.Embed(
+        title="📜 Regras",
+        description=(
+            "Eu não escolheria explicar regras pra ninguém, mas alguém tem que "
+            "manter esse lugar de pé. Segue isso aqui:\n\n" + corpo
+        ),
+        color=COR_RENAN,
+    )
+    embed.set_footer(text="Renan está observando. As regras também.")
+
+    mensagem_id = _carregar_regras_msg_id()
+    if mensagem_id:
+        try:
+            mensagem = await canal.fetch_message(mensagem_id)
+            await mensagem.edit(embed=embed)
+            return
+        except (discord.NotFound, discord.HTTPException):
+            pass  # mensagem antiga não existe mais — cria uma nova abaixo
+
+    try:
+        nova_mensagem = await canal.send(embed=embed)
+        _salvar_regras_msg_id(nova_mensagem.id)
+    except discord.Forbidden:
+        print(f"[renan-regras] sem permissão pra enviar mensagem em #{canal.name}.")
+
+
+# ══════════════════════════════════════════════════════════════════
 # CARGOS POR REAÇÃO
 #
 # Ao iniciar, o Renan garante que todos os cargos abaixo existem (cria
@@ -1129,6 +1203,10 @@ async def on_ready():
             await _configurar_cargos_reacao()
         except Exception as e:
             print(f"[renan-cargos] erro ao configurar cargos: {e!r}")
+        try:
+            await _configurar_regras()
+        except Exception as e:
+            print(f"[renan-regras] erro ao configurar regras: {e!r}")
         _cargos_configurados = True  # não repete a cada reconexão, só na 1ª vez
 
 
