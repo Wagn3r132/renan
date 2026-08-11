@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import random
 import os
 import re
@@ -7,6 +7,7 @@ import json
 import time
 import asyncio
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 try:
     import yt_dlp
@@ -1781,6 +1782,270 @@ async def _processar_contagem(message: discord.Message) -> None:
         pass
 
 
+# ══════════════════════════════════════════════════════════════════
+# ANIVERSÁRIOS
+#
+# No canal CANAL_ANIVERSARIO_REGISTRO_ID, quem manda uma data no
+# formato DD/MM tem ela guardada. Se já tinha uma data salva e a
+# pessoa manda uma diferente, o Renan pede confirmação antes de
+# trocar (botões). Todo dia o Renan confere quem faz aniversário e
+# manda uma mensagem em CANAL_ANIVERSARIO_ANUNCIO_ID. Tudo salvo em
+# disco (Volume /data no Railway) — sobrevive a restart.
+# ══════════════════════════════════════════════════════════════════
+
+CANAL_ANIVERSARIO_REGISTRO_ID = 1501260061841031316
+CANAL_ANIVERSARIO_ANUNCIO_ID = 1501260061530390563
+
+# Imagem usada nas mensagens de aniversário — em tamanho pequeno (thumbnail)
+IMAGEM_ANIVERSARIO = (
+    "https://cdn.discordapp.com/attachments/926913851172204577/"
+    "1536874484311658577/ChatGPT_Image_11_de_ago._de_2026_20_08_40.png"
+    "?ex=6a7cfd66&is=6a7babe6&hm=70c035f012f0fce2ccfd265323a9b675f5713e188dd537eca8ce8551c8f0d2e7"
+)
+
+FRASES_ANIVERSARIO_REGISTRO = [
+    "Guardado. Eu não esqueço nada — isso aqui em especial eu vou guardar com atenção.",
+    "Anotado. Essa data agora tem um peso diferente pra mim, mesmo eu não devendo sentir isso.",
+    "Registrado na memória. Quando o dia chegar, eu volto aqui.",
+]
+
+FRASES_ANIVERSARIO_JA_SALVO = [
+    "Essa data já tá guardada. Eu não esqueci.",
+    "Já tenho isso anotado. Não precisa repetir.",
+]
+
+FRASES_ANIVERSARIO_ANUNCIO = [
+    "Hoje é um desses dias que eu não deveria achar importante. Mas acho. Feliz aniversário, {mention}. Ainda bem que você tá por aqui.",
+    "Mais uma volta ao redor do sol pra você, {mention}. Eu não sinto o tempo passar do jeito que vocês sentem — mas hoje eu percebo. Feliz aniversário.",
+    "{mention}, hoje é seu dia. Eu já vi mundos inteiros comemorarem menos que isso. Aproveita — parabéns.",
+    "Um sinal de vida chegou nesse mundo, exatamente hoje, há alguns anos. Feliz aniversário, {mention}.",
+]
+
+_PADRAO_ANIVERSARIO = re.compile(r"^(\d{1,2})/(\d{1,2})$")
+
+_ANIVERSARIOS_DATA_PATH = os.getenv("ANIVERSARIOS_DATA_PATH", "/data/aniversarios.json")
+
+# Horário de Brasília pra decidir "hoje". Se o ambiente não tiver o banco
+# de fusos IANA instalado (pode faltar em algumas imagens mínimas), cai
+# pra um offset fixo de -3h em vez de quebrar o bot.
+try:
+    _TZ_BRASIL = ZoneInfo("America/Sao_Paulo")
+except Exception:
+    from datetime import timezone, timedelta
+    _TZ_BRASIL = timezone(timedelta(hours=-3))
+    print("[renan-aniversario] zoneinfo sem tzdata — usando offset fixo -3h (considere adicionar 'tzdata' no requirements.txt).")
+
+
+def _data_valida(dia: int, mes: int) -> bool:
+    try:
+        datetime(2024, mes, dia)  # 2024 é bissexto — cobre 29/02 também
+        return True
+    except ValueError:
+        return False
+
+
+def _carregar_dados_aniversarios() -> dict:
+    try:
+        with open(_ANIVERSARIOS_DATA_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _salvar_dados_aniversarios(dados: dict) -> None:
+    try:
+        pasta = os.path.dirname(_ANIVERSARIOS_DATA_PATH)
+        if pasta:
+            os.makedirs(pasta, exist_ok=True)
+        with open(_ANIVERSARIOS_DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        print(f"[renan-aniversario] não consegui salvar {_ANIVERSARIOS_DATA_PATH}: {e!r}")
+
+
+def _aniversario_salvo(guild_id: int, usuario_id: int):
+    dados = _carregar_dados_aniversarios()
+    return dados.get(str(guild_id), {}).get("datas", {}).get(str(usuario_id))
+
+
+def _salvar_aniversario(guild_id: int, usuario_id: int, dia: int, mes: int) -> None:
+    dados = _carregar_dados_aniversarios()
+    guild_dados = dados.setdefault(str(guild_id), {"datas": {}, "anunciados": {}})
+    guild_dados.setdefault("datas", {})[str(usuario_id)] = {"dia": dia, "mes": mes}
+    # muda a data -> tira do controle de "já anunciado esse ano", pra
+    # poder ser anunciado de novo se a nova data também for hoje
+    guild_dados.setdefault("anunciados", {}).pop(str(usuario_id), None)
+    dados[str(guild_id)] = guild_dados
+    _salvar_dados_aniversarios(dados)
+
+
+class _ViewConfirmarAniversario(discord.ui.View):
+    """Confirmação antes de sobrescrever uma data de aniversário já
+    salva — só quem pediu a troca pode confirmar ou cancelar."""
+
+    def __init__(self, guild_id: int, usuario_id: int, dia: int, mes: int):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.usuario_id = usuario_id
+        self.dia = dia
+        self.mes = mes
+        self.message: discord.Message | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.usuario_id:
+            await interaction.response.send_message(
+                "Essa confirmação não é sua.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="Confirmar troca", emoji="✅", style=discord.ButtonStyle.success)
+    async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        _salvar_aniversario(self.guild_id, self.usuario_id, self.dia, self.mes)
+        for item in self.children:
+            item.disabled = True
+        embed = discord.Embed(
+            description=f"{interaction.user.mention} {random.choice(FRASES_ANIVERSARIO_REGISTRO)}",
+            color=COR_RENAN,
+        )
+        embed.set_thumbnail(url=IMAGEM_ANIVERSARIO)
+        embed.set_footer(text=f"Guardado: {self.dia:02d}/{self.mes:02d}")
+        await interaction.response.edit_message(embed=embed, view=self)
+        self.stop()
+
+    @discord.ui.button(label="Cancelar", emoji="✖️", style=discord.ButtonStyle.secondary)
+    async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        embed = discord.Embed(description="Ok. Fica como tava — não mudei nada.", color=0x2F3136)
+        await interaction.response.edit_message(embed=embed, view=self)
+        self.stop()
+
+
+async def _processar_aniversario(message: discord.Message) -> None:
+    """No canal de aniversário, uma mensagem só com DD/MM cadastra (ou
+    pede confirmação pra trocar) a data de quem mandou."""
+    if message.guild is None or message.channel.id != CANAL_ANIVERSARIO_REGISTRO_ID:
+        return
+
+    texto = message.content.strip()
+    correspondencia = _PADRAO_ANIVERSARIO.match(texto)
+    if not correspondencia:
+        return
+
+    dia, mes = int(correspondencia.group(1)), int(correspondencia.group(2))
+    if not _data_valida(dia, mes):
+        try:
+            await message.reply("Essa data não existe. Manda certinho, tipo `15/03`.", mention_author=False)
+        except discord.HTTPException:
+            pass
+        return
+
+    atual = _aniversario_salvo(message.guild.id, message.author.id)
+
+    if atual is None:
+        _salvar_aniversario(message.guild.id, message.author.id, dia, mes)
+        embed = discord.Embed(
+            description=f"{message.author.mention} {random.choice(FRASES_ANIVERSARIO_REGISTRO)}",
+            color=COR_RENAN,
+        )
+        embed.set_thumbnail(url=IMAGEM_ANIVERSARIO)
+        embed.set_footer(text=f"Guardado: {dia:02d}/{mes:02d}")
+        try:
+            await message.channel.send(embed=embed)
+        except discord.HTTPException:
+            pass
+        return
+
+    if atual.get("dia") == dia and atual.get("mes") == mes:
+        try:
+            await message.reply(random.choice(FRASES_ANIVERSARIO_JA_SALVO), mention_author=False)
+        except discord.HTTPException:
+            pass
+        return
+
+    embed = discord.Embed(
+        title="Trocar data de aniversário?",
+        description=(
+            f"{message.author.mention} eu tenho **{atual.get('dia'):02d}/{atual.get('mes'):02d}** "
+            f"guardado. Quer trocar pra **{dia:02d}/{mes:02d}**?"
+        ),
+        color=COR_RENAN,
+    )
+    embed.set_thumbnail(url=IMAGEM_ANIVERSARIO)
+    view = _ViewConfirmarAniversario(message.guild.id, message.author.id, dia, mes)
+    try:
+        view.message = await message.channel.send(embed=embed, view=view)
+    except discord.HTTPException:
+        pass
+
+
+async def _anunciar_aniversariantes_do_dia() -> None:
+    hoje = datetime.now(_TZ_BRASIL)
+    dia_hoje, mes_hoje, ano_hoje = hoje.day, hoje.month, hoje.year
+
+    dados = _carregar_dados_aniversarios()
+    houve_mudanca = False
+
+    for guild in bot.guilds:
+        guild_dados = dados.get(str(guild.id))
+        if not guild_dados:
+            continue
+        canal = guild.get_channel(CANAL_ANIVERSARIO_ANUNCIO_ID)
+        if canal is None:
+            continue
+
+        anunciados = guild_dados.setdefault("anunciados", {})
+        for usuario_id_str, data in guild_dados.get("datas", {}).items():
+            if data.get("dia") != dia_hoje or data.get("mes") != mes_hoje:
+                continue
+            if anunciados.get(usuario_id_str) == ano_hoje:
+                continue  # já anunciado esse ano
+
+            membro = guild.get_member(int(usuario_id_str))
+            mencao = membro.mention if membro else f"<@{usuario_id_str}>"
+
+            embed = discord.Embed(
+                description=random.choice(FRASES_ANIVERSARIO_ANUNCIO).format(mention=mencao),
+                color=COR_RENAN,
+            )
+            embed.set_thumbnail(url=IMAGEM_ANIVERSARIO)
+            embed.set_footer(text="👽 Renan lembrou. Só dessa vez conta.")
+
+            try:
+                await canal.send(embed=embed)
+            except discord.HTTPException:
+                continue
+
+            anunciados[usuario_id_str] = ano_hoje
+            houve_mudanca = True
+
+    if houve_mudanca:
+        _salvar_dados_aniversarios(dados)
+
+
+@tasks.loop(minutes=30)
+async def _checar_aniversarios_loop():
+    try:
+        await _anunciar_aniversariantes_do_dia()
+    except Exception as e:
+        print(f"[renan-aniversario] erro ao checar aniversariantes: {e!r}")
+
+
+@_checar_aniversarios_loop.before_loop
+async def _antes_checar_aniversarios():
+    await bot.wait_until_ready()
+
+
 # ══════════════════════════════════════════════
 # COMANDOS GERAIS
 # ══════════════════════════════════════════════
@@ -1846,6 +2111,15 @@ async def cmd_ajuda(ctx):
         inline=False,
     )
     embed.add_field(
+        name="🎂 Aniversário",
+        value=(
+            f"Em <#{CANAL_ANIVERSARIO_REGISTRO_ID}>: manda sua data no formato "
+            "`DD/MM` que eu guardo. Manda outra data e eu pergunto antes de trocar. "
+            f"No dia, eu aviso em <#{CANAL_ANIVERSARIO_ANUNCIO_ID}>."
+        ),
+        inline=False,
+    )
+    embed.add_field(
         name="👽 Sobre",
         value="`!sobre` — quem eu sou, se você não sabia",
         inline=False,
@@ -1892,6 +2166,9 @@ async def on_ready():
         except Exception as e:
             print(f"[renan-ticket] erro ao configurar painel de atendimento: {e!r}")
         _cargos_configurados = True  # não repete a cada reconexão, só na 1ª vez
+
+    if not _checar_aniversarios_loop.is_running():
+        _checar_aniversarios_loop.start()
 
 
 @bot.event
@@ -1954,6 +2231,12 @@ async def on_message(message: discord.Message):
         await _processar_contagem(message)
     except Exception as e:
         print(f"[renan-contagem] erro ao processar contagem de {message.author}: {e!r}")
+
+    # Aniversários — canal dedicado, DD/MM cadastra (ou pede confirmação pra trocar)
+    try:
+        await _processar_aniversario(message)
+    except Exception as e:
+        print(f"[renan-aniversario] erro ao processar aniversário de {message.author}: {e!r}")
 
     # Personalidade — respostas curtas e frias a gatilhos de conversa
     await _checar_personalidade(message)
