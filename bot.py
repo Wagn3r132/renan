@@ -75,6 +75,13 @@ IMAGEM_BOAS_VINDAS = (
     "?ex=6a7cec09&is=6a7b9a89&hm=e5eb8bde062d83807cca2ad172187e18c1d98359c8363bd7ef740f445ba04a64"
 )
 
+# Imagem usada no embed de regras (separada da de boas-vindas)
+IMAGEM_REGRAS = (
+    "https://cdn.discordapp.com/attachments/926913851172204577/"
+    "1536156672064749598/ChatGPT_Image_9_de_ago._de_2026_20_37_57.png"
+    "?ex=6a7a60e3&is=6a790f63&hm=8f17879426924441d6b7bd081016a1d7583500f7d01f1a8611c3aabba645ad06"
+)
+
 # Imagem usada no painel de tickets de atendimento
 IMAGEM_TICKET = (
     "https://cdn.discordapp.com/attachments/926913851172204577/"
@@ -850,7 +857,7 @@ async def _configurar_regras() -> None:
         ),
         color=COR_RENAN,
     )
-    embed.set_image(url=IMAGEM_BOAS_VINDAS)
+    embed.set_image(url=IMAGEM_REGRAS)
     embed.set_footer(text="Renan está observando. As regras também.")
 
     mensagem_id = _carregar_regras_msg_id()
