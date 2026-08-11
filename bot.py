@@ -32,6 +32,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.guilds = True
+intents.invites = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
@@ -2046,6 +2047,195 @@ async def _antes_checar_aniversarios():
     await bot.wait_until_ready()
 
 
+# ══════════════════════════════════════════════════════════════════
+# LOG DE CONVITES
+#
+# Toda vez que alguém entra usando um convite, o Renan identifica
+# qual convite foi (comparando o cache de usos de antes com o de
+# agora) e manda um embed em CANAL_LOG_CONVITES_ID com quem entrou,
+# quem convidou, o código usado e o total acumulado de convites de
+# quem convidou. O total é contado por nós mesmos (não só pelo "uses"
+# do Discord), então continua certo mesmo se o convite for apagado
+# depois — fica salvo em disco (Volume /data no Railway).
+#
+# Requisito: o cargo do bot precisa ter permissão de "Gerenciar
+# Servidor" pra poder ver a lista de convites do servidor.
+# ══════════════════════════════════════════════════════════════════
+
+# ID do canal onde o log de convites é publicado.
+CANAL_LOG_CONVITES_ID = 1501260060540665973
+
+# Imagem usada no rodapé (banner grande) do log de convites
+IMAGEM_LOG_CONVITES = (
+    "https://cdn.discordapp.com/attachments/926913851172204577/"
+    "1536876519459135518/ChatGPT_Image_11_de_ago._de_2026_20_18_26.png"
+    "?ex=6a7cff4c&is=6a7badcc&hm=918ddb4221368752f815bb6b351792c7088cd2a1de093ba1bffe71010892eb1b"
+)
+
+_CONVITES_DATA_PATH = os.getenv("CONVITES_DATA_PATH", "/data/convites.json")
+
+# guild_id (str) -> código do convite (str) -> {"uses": int, "inviter_id": int|None, "inviter_name": str}
+_convites_cache: dict = {}
+
+
+def _carregar_dados_convites() -> dict:
+    try:
+        with open(_CONVITES_DATA_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _salvar_dados_convites(dados: dict) -> None:
+    try:
+        pasta = os.path.dirname(_CONVITES_DATA_PATH)
+        if pasta:
+            os.makedirs(pasta, exist_ok=True)
+        with open(_CONVITES_DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        print(f"[renan-convites] não consegui salvar {_CONVITES_DATA_PATH}: {e!r}")
+
+
+def _incrementar_convite(guild_id: int, inviter_id: int) -> int:
+    """Soma +1 no total de convites de quem convidou e devolve o novo total."""
+    dados = _carregar_dados_convites()
+    guild_dados = dados.setdefault(str(guild_id), {})
+    novo_total = guild_dados.get(str(inviter_id), 0) + 1
+    guild_dados[str(inviter_id)] = novo_total
+    _salvar_dados_convites(dados)
+    return novo_total
+
+
+async def _atualizar_cache_convites(guild: discord.Guild) -> None:
+    """Recarrega o cache de convites de UM servidor do zero — chamado
+    no start do bot e sempre que um convite é criado/apagado."""
+    try:
+        convites = await guild.invites()
+    except discord.Forbidden:
+        print(f"[renan-convites] sem permissão 'Gerenciar Servidor' pra ver convites em #{guild.name}.")
+        return
+    except discord.HTTPException:
+        return
+
+    _convites_cache[guild.id] = {
+        inv.code: {
+            "uses": inv.uses or 0,
+            "inviter_id": inv.inviter.id if inv.inviter else None,
+            "inviter_name": str(inv.inviter) if inv.inviter else "desconhecido",
+        }
+        for inv in convites
+    }
+
+
+async def _detectar_convite_usado(guild: discord.Guild) -> dict | None:
+    """Compara o cache salvo com a lista atual de convites pra achar
+    qual foi usado (uses subiu, ou o convite sumiu por ter batido no
+    limite de usos). Devolve {code, inviter_id, inviter_name} ou None
+    se não deu pra identificar (ex.: convite vanity, ou sem permissão)."""
+    cache_antigo = _convites_cache.get(guild.id, {})
+
+    try:
+        convites_atuais = await guild.invites()
+    except (discord.Forbidden, discord.HTTPException):
+        return None
+
+    atuais_por_codigo = {inv.code: inv for inv in convites_atuais}
+
+    resultado = None
+    for code, inv in atuais_por_codigo.items():
+        uses_antigo = cache_antigo.get(code, {}).get("uses", 0)
+        if (inv.uses or 0) > uses_antigo:
+            resultado = {
+                "code": inv.code,
+                "inviter_id": inv.inviter.id if inv.inviter else None,
+                "inviter_name": str(inv.inviter) if inv.inviter else "desconhecido",
+            }
+            break
+
+    if resultado is None:
+        # convite de uso único some da lista assim que é usado — usa o
+        # que tava salvo no cache antes de sumir
+        for code, dados_antigos in cache_antigo.items():
+            if code not in atuais_por_codigo:
+                resultado = {
+                    "code": code,
+                    "inviter_id": dados_antigos.get("inviter_id"),
+                    "inviter_name": dados_antigos.get("inviter_name", "desconhecido"),
+                }
+                break
+
+    # atualiza o cache pro estado atual, de qualquer forma
+    _convites_cache[guild.id] = {
+        inv.code: {
+            "uses": inv.uses or 0,
+            "inviter_id": inv.inviter.id if inv.inviter else None,
+            "inviter_name": str(inv.inviter) if inv.inviter else "desconhecido",
+        }
+        for inv in convites_atuais
+    }
+
+    return resultado
+
+
+async def _logar_convite_usado(member: discord.Member) -> None:
+    if not CANAL_LOG_CONVITES_ID:
+        return
+    canal = member.guild.get_channel(CANAL_LOG_CONVITES_ID)
+    if canal is None:
+        return
+
+    info = await _detectar_convite_usado(member.guild)
+
+    embed = discord.Embed(title="💌 Novo Convite Usado!!", color=COR_RENAN)
+
+    if info and info.get("inviter_id"):
+        inviter_id = info["inviter_id"]
+        inviter_mencao = f"<@{inviter_id}>"
+        total = _incrementar_convite(member.guild.id, inviter_id)
+
+        embed.description = (
+            f"{member.mention} entrou no servidor usando o convite de "
+            f"{inviter_mencao}!!"
+        )
+        embed.add_field(name="👤 Quem entrou", value=f"{member.name}\n({member.id})", inline=True)
+        embed.add_field(
+            name="💌 Quem convidou",
+            value=f"{info.get('inviter_name', 'desconhecido')}\n({inviter_id})",
+            inline=True,
+        )
+        embed.add_field(name="🔗 Código", value=f"`{info.get('code', '—')}`", inline=True)
+        embed.add_field(
+            name="🎉 Total de convites",
+            value=f"{inviter_mencao} já tem **{total}** convite{'s' if total != 1 else ''}!!",
+            inline=False,
+        )
+    else:
+        embed.description = (
+            f"{member.mention} entrou no servidor, mas eu não consegui identificar "
+            "qual convite foi usado."
+        )
+        embed.add_field(name="👤 Quem entrou", value=f"{member.name}\n({member.id})", inline=True)
+
+    embed.set_image(url=IMAGEM_LOG_CONVITES)
+    embed.set_footer(text="👽 Renan • log de convites")
+
+    try:
+        await canal.send(embed=embed)
+    except discord.HTTPException:
+        pass
+
+
+@bot.event
+async def on_invite_create(invite: discord.Invite):
+    await _atualizar_cache_convites(invite.guild)
+
+
+@bot.event
+async def on_invite_delete(invite: discord.Invite):
+    await _atualizar_cache_convites(invite.guild)
+
+
 # ══════════════════════════════════════════════
 # COMANDOS GERAIS
 # ══════════════════════════════════════════════
@@ -2120,6 +2310,11 @@ async def cmd_ajuda(ctx):
         inline=False,
     )
     embed.add_field(
+        name="💌 Convites",
+        value="Todo mundo que entra usando um convite fica registrado, com quem convidou e o total acumulado.",
+        inline=False,
+    )
+    embed.add_field(
         name="👽 Sobre",
         value="`!sobre` — quem eu sou, se você não sabia",
         inline=False,
@@ -2167,6 +2362,12 @@ async def on_ready():
             print(f"[renan-ticket] erro ao configurar painel de atendimento: {e!r}")
         _cargos_configurados = True  # não repete a cada reconexão, só na 1ª vez
 
+    for guild in bot.guilds:
+        try:
+            await _atualizar_cache_convites(guild)
+        except Exception as e:
+            print(f"[renan-convites] erro ao montar cache de convites de {guild.name}: {e!r}")
+
     if not _checar_aniversarios_loop.is_running():
         _checar_aniversarios_loop.start()
 
@@ -2186,32 +2387,37 @@ async def on_command_error(ctx, error):
 async def on_member_join(member: discord.Member):
     """Boas-vindas no canal dedicado, no estilo frio (mas não indiferente)
     do Renan: um único embed com avatar do membro, contagem do servidor,
-    o banner de boas-vindas e os direcionamentos pra registro e regras."""
+    o banner de boas-vindas e os direcionamentos pra registro e regras.
+    Também loga, separadamente, qual convite foi usado pra entrar."""
     canal = member.guild.get_channel(CANAL_BOAS_VINDAS_ID)
-    if canal is None:
-        return
+    if canal is not None:
+        descricao = (
+            f"{member.mention} {random.choice(FRASES_BOAS_VINDAS)}\n\n"
+            f"Antes de mais nada: passa em <#{CANAL_CARGOS_ID}> pra fazer seu "
+            f"registro adicional, e não deixa de ler as <#{CANAL_REGRAS_ID}> "
+            f"— regras existem mesmo quando o mundo já acabou uma vez."
+        )
 
-    descricao = (
-        f"{member.mention} {random.choice(FRASES_BOAS_VINDAS)}\n\n"
-        f"Antes de mais nada: passa em <#{CANAL_CARGOS_ID}> pra fazer seu "
-        f"registro adicional, e não deixa de ler as <#{CANAL_REGRAS_ID}> "
-        f"— regras existem mesmo quando o mundo já acabou uma vez."
-    )
+        embed = discord.Embed(
+            title="👽 Mais um sinal de vida chegou",
+            description=descricao,
+            color=COR_RENAN,
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.set_image(url=IMAGEM_BOAS_VINDAS)
+        embed.add_field(name="Agora somos", value=f"{member.guild.member_count} por aqui", inline=True)
+        embed.set_footer(text="Renan está observando.")
 
-    embed = discord.Embed(
-        title="👽 Mais um sinal de vida chegou",
-        description=descricao,
-        color=COR_RENAN,
-    )
-    embed.set_thumbnail(url=member.display_avatar.url)
-    embed.set_image(url=IMAGEM_BOAS_VINDAS)
-    embed.add_field(name="Agora somos", value=f"{member.guild.member_count} por aqui", inline=True)
-    embed.set_footer(text="Renan está observando.")
+        try:
+            await canal.send(embed=embed)
+        except discord.HTTPException:
+            pass
 
     try:
-        await canal.send(embed=embed)
-    except discord.HTTPException:
-        pass
+        await _logar_convite_usado(member)
+    except Exception as e:
+        print(f"[renan-convites] erro ao logar convite de {member}: {e!r}")
+
 
 
 @bot.event
