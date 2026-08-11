@@ -69,8 +69,8 @@ CARGOS_STAFF_IDS = [    # cargos que enxergam e atendem os tickets abertos
 # Imagem usada no embed de boas-vindas (banner grande, junto com o texto)
 IMAGEM_BOAS_VINDAS = (
     "https://cdn.discordapp.com/attachments/926913851172204577/"
-    "1536156672064749598/ChatGPT_Image_9_de_ago._de_2026_20_37_57.png"
-    "?ex=6a7a60e3&is=6a790f63&hm=8f17879426924441d6b7bd081016a1d7583500f7d01f1a8611c3aabba645ad06"
+    "1536131063590551683/ChatGPT_Image_9_de_ago._de_2026_18_48_17.png"
+    "?ex=6a7cec09&is=6a7b9a89&hm=e5eb8bde062d83807cca2ad172187e18c1d98359c8363bd7ef740f445ba04a64"
 )
 
 # Imagem usada no painel de tickets de atendimento
@@ -1655,6 +1655,132 @@ async def cmd_feedback(ctx):
     await ctx.send(content=f"<@{dono_id}>", embed=embed, view=view)
 
 
+# ══════════════════════════════════════════════════════════════════
+# CONTAGEM
+#
+# Jogo de contar: no canal CANAL_CONTAGEM_ID a galera conta em
+# sequência (1, 2, 3...), um número por mensagem. Acertou o próximo
+# número -> Renan reage com 👍. Errou o número, ou a mesma pessoa
+# tenta contar duas vezes seguidas -> zera a contagem e manda a
+# imagem de erro. Estado salvo em disco (Volume /data no Railway)
+# pra sobreviver a um restart do bot.
+# ══════════════════════════════════════════════════════════════════
+
+CANAL_CONTAGEM_ID = 1536866652421890108
+
+IMAGEM_CONTAGEM_ERRO = (
+    "https://cdn.discordapp.com/attachments/926913851172204577/"
+    "1536867257207230494/ChatGPT_Image_11_de_ago._de_2026_19_41_29.png"
+    "?ex=6a7cf6ab&is=6a7ba52b&hm=52f2917a3ae7279e73c9b8e0da9bca5c93c555d2ba9aaa88c88746f7b0bd1b03"
+)
+
+FRASES_CONTAGEM_ERRO = [
+    "Errou. A contagem morre aqui — como quase tudo, cedo ou tarde.",
+    "Não era esse o número. Voltamos ao zero. De novo.",
+    "Sequência quebrada. Eu já vi coisas maiores desmoronarem por menos.",
+    "Errado. Recomeça — se ainda sobrar paciência pra isso.",
+    "...isso não era pra acontecer. Mas aconteceu. Zerou.",
+]
+
+_CONTAGEM_DATA_PATH = os.getenv("CONTAGEM_DATA_PATH", "/data/contagem.json")
+
+# guild_id (str) -> {"numero_atual": int, "ultimo_usuario_id": int|None, "recorde": int}
+_contagem_estado: dict = {}
+
+
+def _carregar_dados_contagem() -> dict:
+    try:
+        with open(_CONTAGEM_DATA_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _salvar_dados_contagem(dados: dict) -> None:
+    try:
+        pasta = os.path.dirname(_CONTAGEM_DATA_PATH)
+        if pasta:
+            os.makedirs(pasta, exist_ok=True)
+        with open(_CONTAGEM_DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        print(f"[renan-contagem] não consegui salvar {_CONTAGEM_DATA_PATH}: {e!r}")
+
+
+def _estado_contagem(guild_id: int) -> dict:
+    """Carrega (ou inicializa) o estado da contagem de UM servidor,
+    mantendo em memória depois da primeira leitura."""
+    if guild_id not in _contagem_estado:
+        salvo = _carregar_dados_contagem().get(str(guild_id), {})
+        _contagem_estado[guild_id] = {
+            "numero_atual": salvo.get("numero_atual", 0),
+            "ultimo_usuario_id": salvo.get("ultimo_usuario_id"),
+            "recorde": salvo.get("recorde", 0),
+        }
+    return _contagem_estado[guild_id]
+
+
+def _salvar_estado_contagem(guild_id: int) -> None:
+    dados = _carregar_dados_contagem()
+    dados[str(guild_id)] = _contagem_estado[guild_id]
+    _salvar_dados_contagem(dados)
+
+
+async def _processar_contagem(message: discord.Message) -> None:
+    """Confere uma mensagem no canal de contagem. Só reage a mensagens
+    que são só um número — o resto passa batido, sem quebrar a
+    sequência."""
+    if message.guild is None or message.channel.id != CANAL_CONTAGEM_ID:
+        return
+
+    texto = message.content.strip()
+    if not texto.isdigit():
+        return
+
+    numero = int(texto)
+    estado = _estado_contagem(message.guild.id)
+    esperado = estado["numero_atual"] + 1
+
+    # erra se: número fora de sequência, OU a mesma pessoa contando
+    # duas vezes seguidas (regra clássica desse tipo de jogo)
+    errou = numero != esperado or message.author.id == estado["ultimo_usuario_id"]
+
+    if errou:
+        if estado["numero_atual"] > estado["recorde"]:
+            estado["recorde"] = estado["numero_atual"]
+        estado["numero_atual"] = 0
+        estado["ultimo_usuario_id"] = None
+        _salvar_estado_contagem(message.guild.id)
+
+        try:
+            await message.add_reaction("❌")
+        except discord.HTTPException:
+            pass
+
+        embed = discord.Embed(
+            description=(
+                f"{message.author.mention} {random.choice(FRASES_CONTAGEM_ERRO)}\n"
+                f"Era pra ser **{esperado}**. Contagem voltou pro **0**."
+            ),
+            color=COR_RENAN,
+        )
+        embed.set_image(url=IMAGEM_CONTAGEM_ERRO)
+        try:
+            await message.channel.send(embed=embed)
+        except discord.HTTPException:
+            pass
+        return
+
+    estado["numero_atual"] = numero
+    estado["ultimo_usuario_id"] = message.author.id
+    _salvar_estado_contagem(message.guild.id)
+
+    try:
+        await message.add_reaction("👍")
+    except discord.HTTPException:
+        pass
+
+
 # ══════════════════════════════════════════════
 # COMANDOS GERAIS
 # ══════════════════════════════════════════════
@@ -1708,6 +1834,14 @@ async def cmd_ajuda(ctx):
             "Só a staff pode clicar em **Fechar Ticket**.\n"
             "`!feedback` (staff) — dentro de um ticket aberto, manda pro "
             "dono o pedido de avaliação do atendimento."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🔢 Contagem",
+        value=(
+            f"Em <#{CANAL_CONTAGEM_ID}>: conta em sequência, um número por "
+            "vez, sem repetir. Acertou, 👍. Errou, zera e eu mostro minha cara."
         ),
         inline=False,
     )
@@ -1814,6 +1948,12 @@ async def on_message(message: discord.Message):
         await _processar_link_solto(message)
     except Exception as e:
         print(f"[renan-musica] erro ao processar link solto de {message.author}: {e!r}")
+
+    # Jogo de contagem — canal dedicado, número certo = 👍, errou = zera
+    try:
+        await _processar_contagem(message)
+    except Exception as e:
+        print(f"[renan-contagem] erro ao processar contagem de {message.author}: {e!r}")
 
     # Personalidade — respostas curtas e frias a gatilhos de conversa
     await _checar_personalidade(message)
