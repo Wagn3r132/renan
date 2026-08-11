@@ -5,6 +5,7 @@ import os
 import re
 import json
 import time
+import uuid
 import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -2243,6 +2244,159 @@ async def on_invite_delete(invite: discord.Invite):
     await _atualizar_cache_convites(invite.guild)
 
 
+# ══════════════════════════════════════════════════════════════════
+# SUGESTÕES
+#
+# No canal CANAL_SUGESTOES_ID, qualquer mensagem vira uma sugestão
+# formatada: a mensagem original é apagada e substituída por um
+# embed com quem sugeriu, o texto (e a imagem, se mandou uma junto),
+# um ID curto e dois botões — ✅ e ❌ — pra galera votar. Clicar de
+# novo no mesmo botão tira o voto. Tudo salvo em disco (Volume /data
+# no Railway), então as sugestões e os votos sobrevivem a restart, e
+# os botões continuam funcionando depois.
+# ══════════════════════════════════════════════════════════════════
+
+CANAL_SUGESTOES_ID = 1501260061841031317
+
+_SUGESTOES_DATA_PATH = os.getenv("SUGESTOES_DATA_PATH", "/data/sugestoes.json")
+
+
+def _carregar_dados_sugestoes() -> dict:
+    try:
+        with open(_SUGESTOES_DATA_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _salvar_dados_sugestoes(dados: dict) -> None:
+    try:
+        pasta = os.path.dirname(_SUGESTOES_DATA_PATH)
+        if pasta:
+            os.makedirs(pasta, exist_ok=True)
+        with open(_SUGESTOES_DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        print(f"[renan-sugestoes] não consegui salvar {_SUGESTOES_DATA_PATH}: {e!r}")
+
+
+def _gerar_id_sugestao() -> str:
+    return f"{uuid.uuid4().hex[:5]}-{uuid.uuid4().hex[:6]}"
+
+
+def _contar_votos(votos: dict) -> tuple:
+    sim = sum(1 for v in votos.values() if v == "sim")
+    nao = sum(1 for v in votos.values() if v == "nao")
+    return sim, nao
+
+
+async def _registrar_voto_sugestao(interaction: discord.Interaction, sug_id: str, voto: str) -> None:
+    dados = _carregar_dados_sugestoes()
+    sugestao = dados.get(sug_id)
+    if sugestao is None:
+        await interaction.response.send_message("Essa sugestão não existe mais.", ephemeral=True)
+        return
+
+    votos = sugestao.setdefault("votos", {})
+    uid = str(interaction.user.id)
+    if votos.get(uid) == voto:
+        votos.pop(uid, None)  # clicou de novo no mesmo botão -> tira o voto
+    else:
+        votos[uid] = voto
+    _salvar_dados_sugestoes(dados)
+
+    sim, nao = _contar_votos(votos)
+
+    if interaction.message.embeds:
+        embed = interaction.message.embeds[0]
+        for i, campo in enumerate(embed.fields):
+            if campo.name == "Resultado até agora":
+                embed.set_field_at(i, name=campo.name, value=f"✅ {sim}\n❌ {nao}", inline=campo.inline)
+                break
+        await interaction.response.edit_message(embed=embed)
+    else:
+        await interaction.response.defer()
+
+
+class _ViewSugestao(discord.ui.View):
+    """Botões ✅ / ❌ de UMA sugestão específica — o custom_id carrega o
+    ID da sugestão, então precisa ser recriado (e re-registrado) pra
+    cada sugestão salva sempre que o bot reinicia."""
+
+    def __init__(self, sug_id: str):
+        super().__init__(timeout=None)
+        self.sug_id = sug_id
+
+        botao_sim = discord.ui.Button(
+            emoji="✅", style=discord.ButtonStyle.secondary, custom_id=f"renan_sugestao_sim:{sug_id}"
+        )
+        botao_sim.callback = self._votar_sim
+        self.add_item(botao_sim)
+
+        botao_nao = discord.ui.Button(
+            emoji="❌", style=discord.ButtonStyle.secondary, custom_id=f"renan_sugestao_nao:{sug_id}"
+        )
+        botao_nao.callback = self._votar_nao
+        self.add_item(botao_nao)
+
+    async def _votar_sim(self, interaction: discord.Interaction):
+        await _registrar_voto_sugestao(interaction, self.sug_id, "sim")
+
+    async def _votar_nao(self, interaction: discord.Interaction):
+        await _registrar_voto_sugestao(interaction, self.sug_id, "nao")
+
+
+async def _processar_sugestao(message: discord.Message) -> None:
+    if message.guild is None or message.channel.id != CANAL_SUGESTOES_ID:
+        return
+
+    texto = message.content.strip()
+    if not texto and not message.attachments:
+        return  # nada pra virar sugestão
+
+    sug_id = _gerar_id_sugestao()
+
+    embed = discord.Embed(
+        title="💡 Sugestão",
+        description=texto or "*(sem texto — só anexo)*",
+        color=COR_RENAN,
+    )
+    if message.attachments:
+        anexo = message.attachments[0]
+        if anexo.content_type and anexo.content_type.startswith("image/"):
+            embed.set_image(url=anexo.url)
+
+    embed.set_thumbnail(url=message.author.display_avatar.url)
+    embed.add_field(name="Quem sugeriu", value=message.author.mention, inline=False)
+    embed.add_field(name="Resultado até agora", value="✅ 0\n❌ 0", inline=False)
+    embed.set_footer(text=f"ID da sugestão: {sug_id}")
+    embed.timestamp = message.created_at
+
+    view = _ViewSugestao(sug_id)
+
+    try:
+        await message.delete()
+    except discord.HTTPException:
+        pass
+
+    try:
+        nova_mensagem = await message.channel.send(embed=embed, view=view)
+    except discord.HTTPException:
+        return
+
+    dados = _carregar_dados_sugestoes()
+    dados[sug_id] = {
+        "guild_id": message.guild.id,
+        "canal_id": message.channel.id,
+        "mensagem_id": nova_mensagem.id,
+        "autor_id": message.author.id,
+        "texto": texto,
+        "votos": {},
+        "criado_em": time.time(),
+    }
+    _salvar_dados_sugestoes(dados)
+
+
 # ══════════════════════════════════════════════
 # COMANDOS GERAIS
 # ══════════════════════════════════════════════
@@ -2367,6 +2521,12 @@ async def on_ready():
             await _configurar_painel_ticket()
         except Exception as e:
             print(f"[renan-ticket] erro ao configurar painel de atendimento: {e!r}")
+        try:
+            dados_sugestoes = _carregar_dados_sugestoes()
+            for sug_id in dados_sugestoes.keys():
+                bot.add_view(_ViewSugestao(sug_id))   # re-registra os botões ✅/❌ de cada sugestão salva
+        except Exception as e:
+            print(f"[renan-sugestoes] erro ao re-registrar botões de sugestões: {e!r}")
         _cargos_configurados = True  # não repete a cada reconexão, só na 1ª vez
 
     for guild in bot.guilds:
@@ -2450,6 +2610,12 @@ async def on_message(message: discord.Message):
         await _processar_aniversario(message)
     except Exception as e:
         print(f"[renan-aniversario] erro ao processar aniversário de {message.author}: {e!r}")
+
+    # Sugestões — canal dedicado, mensagem vira embed com votação ✅/❌
+    try:
+        await _processar_sugestao(message)
+    except Exception as e:
+        print(f"[renan-sugestoes] erro ao processar sugestão de {message.author}: {e!r}")
 
     # Personalidade — respostas curtas e frias a gatilhos de conversa
     await _checar_personalidade(message)
