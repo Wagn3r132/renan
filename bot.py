@@ -5046,7 +5046,7 @@ def _checar_desbloqueio_besta(user_id: int, criatura: dict, nivel_antigo: int, n
 
 # Canal onde todo desbloqueio de 🐺 Besta é anunciado — mesmo canal do chat
 # geral (_XP_CANAL_1 = 1284257046740602901).
-_BESTA_ANUNCIO_CANAL_ID = 0  # TODO: configure
+_BESTA_ANUNCIO_CANAL_ID = 1501260061530390563  # canal de anúncios do RPG
 
 
 async def _anunciar_besta_desbloqueada(
@@ -5086,7 +5086,7 @@ async def _anunciar_besta_desbloqueada(
 
 # Canal onde todo desbloqueio de 🦴 Fóssil é anunciado — mesmo canal do chat
 # geral (_XP_CANAL_1 = 1284257046740602901), igual ao anúncio de Besta.
-_FOSSIL_ANUNCIO_CANAL_ID = 0  # TODO: configure
+_FOSSIL_ANUNCIO_CANAL_ID = 1501260061530390563  # canal de anúncios do RPG
 
 
 async def _anunciar_fossil_desbloqueado(
@@ -7333,7 +7333,7 @@ async def cmd_uparcriatura(ctx, alvo_id: int = None):
 # ══════════════════════════════════════════════════════════════════════
 
 _BAU_GIF = "https://static2.klipy.com/ii/d7aec6f6f171607374b2065c836f92f4/be/e0/WQOIGADT.gif"
-_BAU_CANAL_ID = 0  # TODO: configure  # mesmo canal do chat geral (_XP_CANAL_1)
+_BAU_CANAL_ID = 1501260061530390563  # canal de anúncios do RPG
 
 _BAU_CHANCE_SECRETO = 0.08    # 8% de chance — ainda o prêmio mais raro do baú (o booster é 15%), uma criatura 🌌 Secreta
 _BAU_CHANCE_BOOSTER = 0.15    # 15% de chance de sair o booster
@@ -7816,7 +7816,7 @@ async def cmd_baumimic(ctx):
 # mais precisar trocar.
 _BOSS_DRAGAO_CAOS_GIF = "https://cdn.discordapp.com/attachments/926913851172204577/1529955698690228294/gif-ezgif.com-optimize.gif?ex=6a63d1c7&is=6a628047&hm=7ce47d57d6827c7b60f48d9bb849950abdfe7893b460ef32a5a6755650ecc065"
 
-_BOSS_CANAL_ID = 0  # TODO: configure   # mesmo canal do chat geral (_XP_CANAL_1) — só aparece aqui
+_BOSS_CANAL_ID = 1501260061530390563  # canal de anúncios do RPG — só aparece aqui
 
 _BOSS_TEMPO_ESCOLHA      = 60   # segundos pra decidir "todos juntos" ou "sozinho"
 _BOSS_TEMPO_RECRUTAMENTO = 10   # segundos pra galera clicar "quero participar" depois de "todos juntos"
