@@ -1696,7 +1696,16 @@ FRASES_CONTAGEM_ERRO = [
 
 _CONTAGEM_DATA_PATH = os.getenv("CONTAGEM_DATA_PATH", "/data/contagem.json")
 
-# guild_id (str) -> {"numero_atual": int, "ultimo_usuario_id": int|None, "recorde": int}
+# Escudo de acertos: a cada N números certos que UM usuário mandar (não
+# precisa ser seguido, é cumulativo pra ele), ele ganha 1 escudo. Da
+# próxima vez que ELE errar o número, o escudo é consumido: o erro não
+# conta, a contagem não zera, e ele pode tentar de novo na hora.
+_CONTAGEM_ACERTOS_PARA_ESCUDO = 50
+
+# guild_id (str) -> {
+#     "numero_atual": int, "ultimo_usuario_id": int|None, "recorde": int,
+#     "acertos_usuario": {user_id (str): int}, "escudos_usuario": {user_id (str): int},
+# }
 _contagem_estado: dict = {}
 
 
@@ -1728,6 +1737,8 @@ def _estado_contagem(guild_id: int) -> dict:
             "numero_atual": salvo.get("numero_atual", 0),
             "ultimo_usuario_id": salvo.get("ultimo_usuario_id"),
             "recorde": salvo.get("recorde", 0),
+            "acertos_usuario": salvo.get("acertos_usuario", {}),
+            "escudos_usuario": salvo.get("escudos_usuario", {}),
         }
     return _contagem_estado[guild_id]
 
@@ -1741,7 +1752,14 @@ def _salvar_estado_contagem(guild_id: int) -> None:
 async def _processar_contagem(message: discord.Message) -> None:
     """Confere uma mensagem no canal de contagem. Só reage a mensagens
     que são só um número — o resto passa batido, sem quebrar a
-    sequência."""
+    sequência.
+
+    Escudo de acertos: quem acumula _CONTAGEM_ACERTOS_PARA_ESCUDO números
+    certos (cumulativo pra aquele usuário, não precisa ser seguido)
+    ganha um escudo. Da próxima vez que ESSE usuário errar o número —
+    não vale pra regra de "duas vezes seguidas", só pra número errado
+    mesmo — o escudo é consumido: o erro não conta, a contagem não
+    zera, e a pessoa pode tentar de novo na hora."""
     if message.guild is None or message.channel.id != CANAL_CONTAGEM_ID:
         return
 
@@ -1752,12 +1770,45 @@ async def _processar_contagem(message: discord.Message) -> None:
     numero = int(texto)
     estado = _estado_contagem(message.guild.id)
     esperado = estado["numero_atual"] + 1
+    autor_id = str(message.author.id)
 
     # erra se: número fora de sequência, OU a mesma pessoa contando
     # duas vezes seguidas (regra clássica desse tipo de jogo)
-    errou = numero != esperado or message.author.id == estado["ultimo_usuario_id"]
+    numero_errado = numero != esperado
+    mesma_pessoa_seguida = message.author.id == estado["ultimo_usuario_id"]
+    errou = numero_errado or mesma_pessoa_seguida
 
     if errou:
+        # O escudo só cobre número errado — contar duas vezes seguidas
+        # continua zerando normal, escudo não segura essa.
+        escudos = estado.setdefault("escudos_usuario", {})
+        tem_escudo = numero_errado and not mesma_pessoa_seguida and escudos.get(autor_id, 0) > 0
+
+        if tem_escudo:
+            escudos[autor_id] -= 1
+            if escudos[autor_id] <= 0:
+                del escudos[autor_id]
+            _salvar_estado_contagem(message.guild.id)
+
+            try:
+                await message.add_reaction("🛡️")
+            except discord.HTTPException:
+                pass
+
+            embed = discord.Embed(
+                description=(
+                    f"{message.author.mention} errou, mas o escudo segurou — "
+                    "esse erro não conta. Contagem continua em "
+                    f"**{estado['numero_atual']}**. Manda o **{esperado}** certo."
+                ),
+                color=COR_RENAN,
+            )
+            try:
+                await message.channel.send(embed=embed)
+            except discord.HTTPException:
+                pass
+            return
+
         if estado["numero_atual"] > estado["recorde"]:
             estado["recorde"] = estado["numero_atual"]
         estado["numero_atual"] = 0
@@ -1785,12 +1836,35 @@ async def _processar_contagem(message: discord.Message) -> None:
 
     estado["numero_atual"] = numero
     estado["ultimo_usuario_id"] = message.author.id
+
+    acertos = estado.setdefault("acertos_usuario", {})
+    acertos[autor_id] = acertos.get(autor_id, 0) + 1
+    ganhou_escudo = acertos[autor_id] % _CONTAGEM_ACERTOS_PARA_ESCUDO == 0
+
+    if ganhou_escudo:
+        escudos = estado.setdefault("escudos_usuario", {})
+        escudos[autor_id] = escudos.get(autor_id, 0) + 1
+
     _salvar_estado_contagem(message.guild.id)
 
     try:
         await message.add_reaction("👍")
     except discord.HTTPException:
         pass
+
+    if ganhou_escudo:
+        embed = discord.Embed(
+            description=(
+                f"🛡️ {message.author.mention} bateu **{acertos[autor_id]}** acertos "
+                "e ganhou um escudo. Da próxima vez que errar o número, "
+                "esse erro não vai contar."
+            ),
+            color=COR_RENAN,
+        )
+        try:
+            await message.channel.send(embed=embed)
+        except discord.HTTPException:
+            pass
 
 
 # ══════════════════════════════════════════════════════════════════
