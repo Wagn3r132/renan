@@ -6889,7 +6889,7 @@ async def _processar_desafio(message: discord.Message) -> None:
 # ══════════════════════════════════════════════════════════════════════
 
 
-CANAL_CRIATURAS_ID = 1536873429528092772  # canal onde a coleção do !criaturas é SEMPRE enviada
+CANAL_CRIATURAS_ID = 1536880856743022682  # canal onde a coleção do !criaturas é SEMPRE enviada
 
 
 @bot.command(name="criaturas")
