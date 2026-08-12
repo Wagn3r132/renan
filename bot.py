@@ -2450,7 +2450,7 @@ async def _processar_sugestao(message: discord.Message) -> None:
 _RPG_DATA_DIR = os.getenv("RPG_DATA_DIR", "/data")
 
 CANAL_XP_ID = 1536873405536673833   # canal do ranking fixo de XP/nível
-CARGO_XP_ID = 0   # TODO: configure — cargo de quem participa do ranking
+CARGO_XP_ID = 1501260059160608792   # cargo de quem participa do ranking
 
 # Único canal onde desafios ("eu te desafio @alguém") podem rolar — em
 # qualquer outro canal, o Renan avisa que é só ali e não deixa a batalha
@@ -2490,7 +2490,7 @@ _XP_MAX_POR_MSG       = 25   # xp máximo ganho por mensagem válida (canais nor
 _XP_COOLDOWN_SEGUNDOS = 60   # tempo mínimo entre ganhos de xp da mesma pessoa
 
 # Canais que valem XP "cheio" e que destravam a aparição no ranking
-_XP_CANAL_1        = 0  # TODO: configure — canal principal que dá XP cheio
+_XP_CANAL_1        = 1536873405536673833  # canal principal que dá XP cheio
 _XP_CANAL_BONUS    = 0  # TODO: configure — canal bônus (XP extra)   # este dá XP extra (bônus)
 _XP_CANAL_3        = 0  # TODO: configure — 3º canal que dá XP cheio
 _XP_CANAIS_RANKING = {_XP_CANAL_1, _XP_CANAL_BONUS, _XP_CANAL_3}
@@ -2525,7 +2525,7 @@ _COR_PADRAO = "roxo"
 
 # Cargo de Booster do servidor — só quem tem esse cargo pode escolher as
 # cores especiais (marcadas com "booster": True) lá embaixo.
-_CARGO_BOOSTER_CORES_ID = 0  # TODO: configure
+_CARGO_BOOSTER_CORES_ID = 1537214712230445116  # cargo de Booster do servidor
 
 _CORES_QUADRADO = {
     # ── Cores normais — disponíveis pra qualquer pessoa ──────────────────
