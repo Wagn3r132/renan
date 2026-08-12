@@ -2361,15 +2361,26 @@ async def _processar_sugestao(message: discord.Message) -> None:
         description=texto or "*(sem texto — só anexo)*",
         color=COR_RENAN,
     )
-    if message.attachments:
-        anexo = message.attachments[0]
+
+    # Baixa a imagem ANTES de apagar a mensagem original — se a gente só
+    # reaproveitasse a URL do anexo, ela podia parar de funcionar assim que
+    # a mensagem original (dona do anexo) fosse deletada. Reenviando o
+    # arquivo junto com o embed novo, a imagem passa a pertencer à própria
+    # mensagem da sugestão.
+    arquivo_imagem = None
+    for anexo in message.attachments:
         if anexo.content_type and anexo.content_type.startswith("image/"):
-            embed.set_image(url=anexo.url)
+            try:
+                arquivo_imagem = await anexo.to_file()
+                embed.set_image(url=f"attachment://{arquivo_imagem.filename}")
+            except discord.HTTPException:
+                arquivo_imagem = None
+            break  # só a primeira imagem enviada vira a imagem do embed
 
     embed.set_thumbnail(url=message.author.display_avatar.url)
     embed.add_field(name="Quem sugeriu", value=message.author.mention, inline=False)
     embed.add_field(name="Resultado até agora", value="✅ 0\n❌ 0", inline=False)
-    embed.set_footer(text=f"ID da sugestão: {sug_id}")
+    embed.set_footer(text=f"ID da sugestão: {sug_id} • comente na thread abaixo")
     embed.timestamp = message.created_at
 
     view = _ViewSugestao(sug_id)
@@ -2380,9 +2391,22 @@ async def _processar_sugestao(message: discord.Message) -> None:
         pass
 
     try:
-        nova_mensagem = await message.channel.send(embed=embed, view=view)
+        if arquivo_imagem is not None:
+            nova_mensagem = await message.channel.send(embed=embed, view=view, file=arquivo_imagem)
+        else:
+            nova_mensagem = await message.channel.send(embed=embed, view=view)
     except discord.HTTPException:
         return
+
+    # Thread de comentários — a votação fica nos botões ✅/❌, quem quiser
+    # discutir ou justificar o voto comenta aqui embaixo, sem poluir o canal.
+    try:
+        await nova_mensagem.create_thread(
+            name=f"💬 Comentários — {sug_id}",
+            auto_archive_duration=1440,
+        )
+    except discord.HTTPException as e:
+        print(f"[renan-sugestoes] não consegui criar thread de comentários pra {sug_id}: {e!r}")
 
     dados = _carregar_dados_sugestoes()
     dados[sug_id] = {
