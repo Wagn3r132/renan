@@ -277,6 +277,8 @@ class _EstadoMusica:
         self.tocando = None           # música atual
         self.painel_msg = None        # mensagem do painel com botões
         self.canal_texto = None       # onde mandar avisos/painel
+        self.volume = 1.0             # 1.0 = 100% (vai de 0.0 a 2.0)
+        self.loop = False             # repete a música atual quando termina
 
 
 _musica_estado: dict = {}       # guild_id -> _EstadoMusica
@@ -444,6 +446,8 @@ def _criar_embed_painel(estado: "_EstadoMusica") -> discord.Embed:
             color=COR_RENAN,
         )
         embed.add_field(name="Pedido por", value=atual["requisitante"], inline=True)
+        embed.add_field(name="🔊 Volume", value=f"{round(estado.volume * 100)}%", inline=True)
+        embed.add_field(name="🔁 Repetir", value="Ativado" if estado.loop else "Desativado", inline=True)
 
     if estado.fila:
         linhas = [
@@ -488,14 +492,19 @@ async def _tocar_proxima(guild: discord.Guild) -> None:
         _musica_estado.pop(guild.id, None)
         return
 
-    if not estado.fila:
+    if not estado.fila and not (estado.loop and estado.tocando is not None):
         estado.tocando = None
         await _atualizar_painel(estado, guild.id)
         _agendar_idle_disconnect(guild)
         return
 
     _cancelar_idle_disconnect(guild.id)
-    proximo = estado.fila.pop(0)
+
+    if estado.loop and estado.tocando is not None:
+        # repete a música atual — não tira nada da fila
+        proximo = estado.tocando
+    else:
+        proximo = estado.fila.pop(0)
 
     # Faixas vindas de playlist não têm stream_url ainda (só título + link) —
     # o áudio só é resolvido agora, na hora exata que vai tocar.
@@ -515,6 +524,7 @@ async def _tocar_proxima(guild: discord.Guild) -> None:
 
     try:
         source = discord.FFmpegPCMAudio(proximo["stream_url"], **_FFMPEG_OPTS)
+        source = discord.PCMVolumeTransformer(source, volume=estado.volume)
     except Exception as e:
         if estado.canal_texto:
             await estado.canal_texto.send(f"Erro ao preparar `{proximo['titulo']}`: `{e}`")
@@ -533,11 +543,22 @@ async def _tocar_proxima(guild: discord.Guild) -> None:
 
 
 class PainelMusica(discord.ui.View):
-    """Botões do painel: pausar/retomar, pular e sair."""
+    """Botões do painel: pausar/retomar, pular, sair, volume, repetir,
+    embaralhar e ver fila completa."""
 
     def __init__(self, guild_id: int):
         super().__init__(timeout=None)
         self.guild_id = guild_id
+
+        # reflete o estado real assim que o painel é criado/reenviado,
+        # em vez de sempre nascer com os rótulos "zerados"
+        estado = _musica_estado.get(guild_id)
+        guild = bot.get_guild(guild_id)
+        vc = guild.voice_client if guild else None
+        if vc is not None and vc.is_paused():
+            self.botao_pausar.label = "▶️ Retomar"
+        if estado is not None and estado.loop:
+            self.botao_loop.style = discord.ButtonStyle.success
 
     async def _checar_call(self, interaction: discord.Interaction):
         guild = interaction.guild
@@ -560,7 +581,7 @@ class PainelMusica(discord.ui.View):
             return None
         return vc
 
-    @discord.ui.button(label="⏸️ Pausar", style=discord.ButtonStyle.secondary, custom_id="renan_musica_pausar")
+    @discord.ui.button(label="⏸️ Pausar", style=discord.ButtonStyle.secondary, custom_id="renan_musica_pausar", row=0)
     async def botao_pausar(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = await self._checar_call(interaction)
         if vc is None:
@@ -580,7 +601,7 @@ class PainelMusica(discord.ui.View):
         embed = _criar_embed_painel(estado) if estado else _criar_embed_painel(_EstadoMusica())
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="⏭️ Pular", style=discord.ButtonStyle.primary, custom_id="renan_musica_pular")
+    @discord.ui.button(label="⏭️ Pular", style=discord.ButtonStyle.primary, custom_id="renan_musica_pular", row=0)
     async def botao_pular(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = await self._checar_call(interaction)
         if vc is None:
@@ -592,7 +613,7 @@ class PainelMusica(discord.ui.View):
         await interaction.response.send_message("Pulando.", ephemeral=True, delete_after=3)
         vc.stop()  # dispara o "after" -> _tocar_proxima toca a próxima sozinha
 
-    @discord.ui.button(label="⏹️ Sair", style=discord.ButtonStyle.danger, custom_id="renan_musica_sair")
+    @discord.ui.button(label="⏹️ Sair", style=discord.ButtonStyle.danger, custom_id="renan_musica_sair", row=0)
     async def botao_sair(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = await self._checar_call(interaction)
         if vc is None:
@@ -607,6 +628,89 @@ class PainelMusica(discord.ui.View):
 
         embed = discord.Embed(title="⏹️ Encerrado", description="Fila limpa. Eu fui.", color=0xED4245)
         await interaction.response.edit_message(embed=embed, view=None)
+
+    @discord.ui.button(label="🔉 Vol -", style=discord.ButtonStyle.secondary, custom_id="renan_musica_vol_menos", row=1)
+    async def botao_vol_menos(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = await self._checar_call(interaction)
+        if vc is None:
+            return
+        estado = _musica_estado.get(self.guild_id)
+        if estado is None:
+            await interaction.response.send_message("Nada tocando agora.", ephemeral=True)
+            return
+
+        estado.volume = max(0.0, round(estado.volume - 0.1, 2))
+        if vc.source is not None:
+            vc.source.volume = estado.volume  # aplica na hora, sem cortar a música
+
+        embed = _criar_embed_painel(estado)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="🔊 Vol +", style=discord.ButtonStyle.secondary, custom_id="renan_musica_vol_mais", row=1)
+    async def botao_vol_mais(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = await self._checar_call(interaction)
+        if vc is None:
+            return
+        estado = _musica_estado.get(self.guild_id)
+        if estado is None:
+            await interaction.response.send_message("Nada tocando agora.", ephemeral=True)
+            return
+
+        estado.volume = min(2.0, round(estado.volume + 0.1, 2))  # até 200%
+        if vc.source is not None:
+            vc.source.volume = estado.volume
+
+        embed = _criar_embed_painel(estado)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="🔁 Repetir", style=discord.ButtonStyle.secondary, custom_id="renan_musica_loop", row=1)
+    async def botao_loop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = await self._checar_call(interaction)
+        if vc is None:
+            return
+        estado = _musica_estado.get(self.guild_id)
+        if estado is None:
+            await interaction.response.send_message("Nada tocando agora.", ephemeral=True)
+            return
+
+        estado.loop = not estado.loop
+        button.style = discord.ButtonStyle.success if estado.loop else discord.ButtonStyle.secondary
+
+        embed = _criar_embed_painel(estado)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="🔀 Embaralhar", style=discord.ButtonStyle.secondary, custom_id="renan_musica_shuffle", row=2)
+    async def botao_shuffle(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = await self._checar_call(interaction)
+        if vc is None:
+            return
+        estado = _musica_estado.get(self.guild_id)
+        if estado is None or not estado.fila:
+            await interaction.response.send_message("Fila vazia, nada pra embaralhar.", ephemeral=True)
+            return
+
+        random.shuffle(estado.fila)
+        embed = _criar_embed_painel(estado)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="📜 Fila completa", style=discord.ButtonStyle.secondary, custom_id="renan_musica_fila_completa", row=2)
+    async def botao_fila_completa(self, interaction: discord.Interaction, button: discord.ui.Button):
+        estado = _musica_estado.get(self.guild_id)
+        if estado is None or not estado.fila:
+            await interaction.response.send_message("Fila vazia.", ephemeral=True)
+            return
+
+        linhas = [
+            f"`{i + 1}.` {item['titulo']} — *{item['requisitante']}*"
+            for i, item in enumerate(estado.fila)
+        ]
+        texto = "\n".join(linhas)
+        if len(texto) > 3900:
+            texto = texto[:3900] + "\n... (lista cortada, muita coisa)"
+
+        await interaction.response.send_message(
+            f"**Fila completa ({len(estado.fila)}):**\n{texto}", ephemeral=True
+        )
 
 
 # Reconhece link de YouTube, Spotify e SoundCloud soltos numa mensagem
@@ -802,6 +906,32 @@ async def cmd_sair(ctx):
 
     await vc.disconnect()
     await ctx.send("Música parada. Fila limpa. Eu fui.")
+
+
+@bot.command(name="setup")
+async def cmd_setup(ctx):
+    """Reenvia o painel de música pra esse canal (apaga o painel antigo,
+    se tinha um, e manda um novo aqui). Útil pra trazer o painel de
+    volta pro fim do chat depois que a conversa engoliu ele."""
+    if ctx.guild is None:
+        return
+
+    estado = _musica_estado.get(ctx.guild.id)
+    if estado is None:
+        estado = _EstadoMusica()
+        _musica_estado[ctx.guild.id] = estado
+
+    estado.canal_texto = ctx.channel
+
+    if estado.painel_msg is not None:
+        try:
+            await estado.painel_msg.delete()
+        except discord.HTTPException:
+            pass
+
+    embed = _criar_embed_painel(estado)
+    view = PainelMusica(ctx.guild.id)
+    estado.painel_msg = await ctx.channel.send(embed=embed, view=view)
 
 
 # ══════════════════════════════════════════════════════════════════
