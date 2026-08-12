@@ -2491,8 +2491,8 @@ _XP_COOLDOWN_SEGUNDOS = 60   # tempo mínimo entre ganhos de xp da mesma pessoa
 
 # Canais que valem XP "cheio" e que destravam a aparição no ranking
 _XP_CANAL_1        = 1536873405536673833  # canal principal que dá XP cheio
-_XP_CANAL_BONUS    = 0  # TODO: configure — canal bônus (XP extra)   # este dá XP extra (bônus)
-_XP_CANAL_3        = 0  # TODO: configure — 3º canal que dá XP cheio
+_XP_CANAL_BONUS    = 1501260061530390563  # canal bônus (XP extra)   # este dá XP extra (bônus)
+_XP_CANAL_3        = 1536893752508162178  # 3º canal que dá XP cheio
 _XP_CANAIS_RANKING = {_XP_CANAL_1, _XP_CANAL_BONUS, _XP_CANAL_3}
 
 _XP_MULTIPLICADOR_BONUS  = 1.6    # canal bônus: 60% a mais de xp por mensagem
