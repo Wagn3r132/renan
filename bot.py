@@ -84,7 +84,7 @@ CIRCULO_IMPULSOS_RAIO = 245            # raio, em pixels
 CARGO_IMPULSIONADOR_ID = 1537214712230445116  # cargo de Booster do servidor (mesmo cargo usado lá embaixo pras cores)
 
 # ── Sistema de tickets de atendimento (preencha com os IDs reais) ──
-CANAL_PAINEL_TICKET_ID = 1501260061358559392   # canal onde fica fixado o painel com o botão "Abrir Ticket"
+CANAL_PAINEL_TICKET_ID = 1501260061358559392   # canal onde fica fixado o painel com o menu de tickets
 CATEGORIA_TICKETS_ID = 1501260061358559391  # categoria onde os canais de ticket são criados
 CANAL_FEEDBACK_ID = 1536202405887221901     # canal onde cai o feedback que a pessoa dá no final
 CARGOS_STAFF_IDS = [    # cargos que enxergam e atendem os tickets abertos
@@ -1388,7 +1388,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 # ══════════════════════════════════════════════════════════════════
 # TICKETS DE ATENDIMENTO
 #
-# Painel fixo (embed + botão "🎫 Abrir Ticket") no canal
+# Painel fixo (embed + menu dropdown de categorias) no canal
 # CANAL_PAINEL_TICKET_ID. Quem clicar ganha um canal privado só seu
 # dentro de CATEGORIA_TICKETS_ID, visível pra você e pros CARGOS_STAFF_IDS.
 # Dentro do ticket tem um botão "🔒 Fechar Ticket" — SÓ A STAFF pode
@@ -1444,21 +1444,67 @@ def _e_staff(membro: discord.Member) -> bool:
     return bool(ids_dos_cargos.intersection(CARGOS_STAFF_IDS))
 
 
+# Categorias do menu de abertura de ticket (aparecem no dropdown, na ordem
+# abaixo). "value" é o que fica salvo/usado internamente (nome do canal,
+# etc.) — "label"/"emoji"/"descricao" são só o que aparece pro usuário.
+CATEGORIAS_TICKET = {
+    "atendimento": {
+        "label": "Atendimento",
+        "emoji": "🎫",
+        "descricao": "Falar com a staff sobre algo geral",
+    },
+    "parceria": {
+        "label": "Parceria",
+        "emoji": "🤝",
+        "descricao": "Propor ou tratar de uma parceria",
+    },
+    "duvidas": {
+        "label": "Dúvidas",
+        "emoji": "❓",
+        "descricao": "Tirar dúvidas sobre o servidor",
+    },
+    "reclamacoes": {
+        "label": "Reclamações",
+        "emoji": "⚠️",
+        "descricao": "Fazer uma reclamação ou reportar um problema",
+    },
+}
+
+
+class SelectTicket(discord.ui.Select):
+    """Menu fixo do painel de atendimento — abre um ticket novo pra
+    quem selecionar (ou manda de volta pro ticket já aberto)."""
+
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label=info["label"],
+                value=chave,
+                emoji=info["emoji"],
+                description=info["descricao"],
+            )
+            for chave, info in CATEGORIAS_TICKET.items()
+        ]
+        super().__init__(
+            placeholder="Selecione o motivo do seu ticket",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="renan_ticket_select",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        categoria = self.values[0]
+        await _abrir_ticket(interaction, categoria)
+
+
 class PainelTicket(discord.ui.View):
-    """Botão fixo do painel de atendimento — abre um ticket novo pra
-    quem clicar (ou manda de volta pro ticket já aberto)."""
+    """View fixa do painel de atendimento — contém só o menu dropdown
+    de categorias (SelectTicket) acima."""
 
     def __init__(self):
         super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="Abrir Ticket",
-        emoji="🎫",
-        style=discord.ButtonStyle.danger,
-        custom_id="renan_ticket_abrir",
-    )
-    async def abrir(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _abrir_ticket(interaction)
+        self.add_item(SelectTicket())
 
 
 class ModalMotivoEncerramento(discord.ui.Modal, title="Fechar Ticket"):
@@ -1502,10 +1548,12 @@ class FecharTicket(discord.ui.View):
         await interaction.response.send_modal(ModalMotivoEncerramento(interaction.channel))
 
 
-async def _abrir_ticket(interaction: discord.Interaction) -> None:
+async def _abrir_ticket(interaction: discord.Interaction, categoria: str = "atendimento") -> None:
     guild = interaction.guild
     if guild is None:
         return
+
+    info_categoria = CATEGORIAS_TICKET.get(categoria, CATEGORIAS_TICKET["atendimento"])
 
     dados = _carregar_dados_tickets()
     abertos = dados.setdefault("abertos", {})
@@ -1543,7 +1591,7 @@ async def _abrir_ticket(interaction: discord.Interaction) -> None:
 
     dados["contador"] = dados.get("contador", 0) + 1
     numero = dados["contador"]
-    nome_canal = f"ticket-{numero:04d}-{interaction.user.name}".lower()[:95]
+    nome_canal = f"ticket-{numero:04d}-{categoria}-{interaction.user.name}".lower()[:95]
 
     try:
         canal_ticket = await guild.create_text_channel(
@@ -1562,7 +1610,7 @@ async def _abrir_ticket(interaction: discord.Interaction) -> None:
     _salvar_dados_tickets(dados)
 
     embed = discord.Embed(
-        title="🎫 Atendimento aberto",
+        title=f"{info_categoria['emoji']} Ticket aberto — {info_categoria['label']}",
         description=(
             f"{interaction.user.mention} chegou. Descreve o que precisa — "
             "alguém da staff vai aparecer.\n\n"
@@ -1801,7 +1849,7 @@ async def _configurar_painel_ticket() -> None:
     embed = discord.Embed(
         title="🎫 Atendimento",
         description=(
-            "Precisa falar com a staff? Clica no botão abaixo.\n\n"
+            "Precisa falar com a staff? Selecione uma opção no menu abaixo.\n\n"
             "Um canal privado é criado só pra você — ninguém mais vê, "
             "além de quem for te atender."
         ),
@@ -10913,8 +10961,8 @@ async def cmd_ajuda(ctx):
     embed.add_field(
         name="🎫 Atendimento",
         value=(
-            f"Painel de tickets em <#{CANAL_PAINEL_TICKET_ID}> — clique em "
-            "**Abrir Ticket** pra falar com a staff em particular.\n"
+            f"Painel de tickets em <#{CANAL_PAINEL_TICKET_ID}> — escolha uma "
+            "opção no **menu** pra falar com a staff em particular.\n"
             "Só a staff pode clicar em **Fechar Ticket**.\n"
             "`.feedback` (staff) — dentro de um ticket aberto, manda pro "
             "dono o pedido de avaliação do atendimento."
@@ -10980,7 +11028,7 @@ async def on_ready():
         except Exception as e:
             print(f"[renan-regras] erro ao configurar regras: {e!r}")
         try:
-            bot.add_view(PainelTicket())   # registra os botões como persistentes
+            bot.add_view(PainelTicket())   # registra o menu como persistente
             bot.add_view(FecharTicket())   # (funcionam mesmo depois de reiniciar o bot)
             dados_tickets = _carregar_dados_tickets()
             for chave, registro in dados_tickets.get("pendentes_feedback", {}).items():
