@@ -2799,13 +2799,45 @@ async def pontos(ctx: commands.Context):
 async def on_message_edit(before: discord.Message, after: discord.Message):
     """As mensagens de missão de Orbs costumam ser editadas no lugar
     (em vez de uma mensagem nova a cada missão) — por isso a detecção
-    também roda em cima de edições, não só de mensagens novas."""
-    if after.author.bot:
-        return
+    também roda em cima de edições, não só de mensagens novas.
+    Sem checagem de "author.bot" aqui de propósito: a mensagem de missão
+    normalmente vem de um canal seguido (crosspost via webhook), e o
+    Discord marca o autor desse tipo de mensagem como bot. _processar_missao_orbs
+    já filtra pelo canal certo, então não tem risco de pegar coisa errada."""
     try:
         await _processar_missao_orbs(after)
     except Exception as e:
         print(f"[renan-missoes] erro ao processar edição de missão de orbs: {e!r}")
+
+
+async def _sincronizar_historico_missoes_orbs(guild: discord.Guild, limite: int = 200) -> None:
+    """Varre o histórico recente de CANAL_MISSOES_ORBS_ID e reprocessa cada
+    mensagem de missão encontrada, na ordem em que foram postadas.
+
+    Isso cobre dois casos que a detecção em tempo real (on_message /
+    on_message_edit) sozinha não pega:
+      1) o Renan ficar offline no momento em que uma missão nova chegou
+         (o Discord não reenvia eventos perdidos quando o bot reconecta);
+      2) missões que já estavam no canal antes desse sistema existir.
+
+    Reaproveita _processar_missao_orbs pra cada mensagem, então o
+    comportamento de sempre é mantido: só dispara o aviso com marcação de
+    cargo quando o NOME da missão muda de verdade — não manda aviso
+    repetido nem "spam" de missão antiga que ninguém precisa mais ver."""
+    canal = guild.get_channel(CANAL_MISSOES_ORBS_ID)
+    if canal is None:
+        return
+    try:
+        mensagens = [m async for m in canal.history(limit=limite, oldest_first=True)]
+    except (discord.Forbidden, discord.HTTPException) as e:
+        print(f"[renan-missoes] não consegui ler histórico de <#{CANAL_MISSOES_ORBS_ID}>: {e!r}")
+        return
+
+    for msg in mensagens:
+        try:
+            await _processar_missao_orbs(msg)
+        except Exception as e:
+            print(f"[renan-missoes] erro ao sincronizar mensagem {msg.id} do histórico: {e!r}")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -11228,6 +11260,7 @@ async def cmd_ajuda(ctx):
 # ══════════════════════════════════════════════
 
 _cargos_configurados = False
+_missoes_orbs_sincronizadas = False  # evita reler o histórico do canal a cada reconexão
 
 
 @bot.event
@@ -11273,6 +11306,18 @@ async def on_ready():
             await _atualizar_cache_convites(guild)
         except Exception as e:
             print(f"[renan-convites] erro ao montar cache de convites de {guild.name}: {e!r}")
+
+    # Missões de Orbs — sincroniza o histórico do canal uma vez ao conectar,
+    # pra pegar missão que já estava lá (ou que chegou enquanto o bot estava
+    # offline) sem precisar de ninguém repostando ou marcando na mão.
+    global _missoes_orbs_sincronizadas
+    if not _missoes_orbs_sincronizadas:
+        for guild in bot.guilds:
+            try:
+                await _sincronizar_historico_missoes_orbs(guild)
+            except Exception as e:
+                print(f"[renan-missoes] erro ao sincronizar histórico de {guild.name}: {e!r}")
+        _missoes_orbs_sincronizadas = True
 
     if not _checar_aniversarios_loop.is_running():
         _checar_aniversarios_loop.start()
@@ -11554,6 +11599,16 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
 @bot.event
 async def on_message(message: discord.Message):
+    # Missões de Orbs — roda ANTES do "if message.author.bot: return" abaixo
+    # de propósito. Essas mensagens chegam em CANAL_MISSOES_ORBS_ID via canal
+    # seguido (crosspost/webhook), e o Discord marca o autor desse tipo de
+    # mensagem como bot — se essa checagem rodasse antes, a missão nunca
+    # seria detectada e ninguém saberia sem entrar e olhar o canal na mão.
+    try:
+        await _processar_missao_orbs(message)
+    except Exception as e:
+        print(f"[renan-missoes] erro ao processar missão de orbs de {message.author}: {e!r}")
+
     if message.author.bot:
         return
 
@@ -11575,12 +11630,6 @@ async def on_message(message: discord.Message):
         await _processar_aniversario(message)
     except Exception as e:
         print(f"[renan-aniversario] erro ao processar aniversário de {message.author}: {e!r}")
-
-    # Missões de Orbs — detecta missão nova e manda aviso extra com ping
-    try:
-        await _processar_missao_orbs(message)
-    except Exception as e:
-        print(f"[renan-missoes] erro ao processar missão de orbs de {message.author}: {e!r}")
 
     # Sugestões — canal dedicado, mensagem vira embed com votação ✅/❌
     try:
