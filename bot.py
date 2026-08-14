@@ -125,6 +125,19 @@ IMAGEM_FEEDBACK = (
     "?ex=6a7a8cad&is=6a793b2d&hm=801d38713fb9f51d2147a2a98d9e2cdf9dc7203b0be0ecb2e48876e187dffb74"
 )
 
+# ── Aviso extra de missões de Orbs ──
+# Canal onde as missões de Orbs aparecem (mensagens vindas do canal
+# seguido) — o Renan fica de olho nesse canal e, quando detecta uma
+# missão nova, manda um aviso extra ali mesmo, marcando o cargo abaixo
+# e com o banner personalizado do servidor.
+CANAL_MISSOES_ORBS_ID = 1537674705656483860
+CARGO_MISSOES_ORBS_ID = 1501260059160608792
+IMAGEM_MISSOES_ORBS = (
+    "https://cdn.discordapp.com/attachments/926913851172204577/"
+    "1537676206986502144/ChatGPT_Image_14_de_ago._de_2026_01_16_05.png"
+    "?ex=6a7fe810&is=6a7e9690&hm=f0dacb565448a33ed0910278446852455d65fdff4eac4aa8b84a48047948c7db"
+)
+
 
 # ══════════════════════════════════════════════════════════════════════
 # PERSONALIDADE
@@ -2583,6 +2596,51 @@ async def on_invite_create(invite: discord.Invite):
 @bot.event
 async def on_invite_delete(invite: discord.Invite):
     await _atualizar_cache_convites(invite.guild)
+
+
+# ══════════════════════════════════════════════════════════════════
+# MISSÕES DE ORBS — aviso extra
+#
+# No canal CANAL_MISSOES_ORBS_ID (onde as missões de Orbs aparecem),
+# quando uma mensagem de missão nova é detectada, o Renan manda um
+# aviso extra ali mesmo: marca CARGO_MISSOES_ORBS_ID e usa o banner
+# IMAGEM_MISSOES_ORBS, pra chamar mais atenção pra missão que acabou
+# de aparecer.
+# ══════════════════════════════════════════════════════════════════
+
+_MISSAO_ORBS_GATILHO = "nova missão disponível"
+
+
+async def _processar_missao_orbs(message: discord.Message) -> None:
+    """Detecta uma missão de Orbs nova no canal configurado e manda um
+    aviso extra logo em seguida, no mesmo canal, marcando o cargo de
+    notificação e com o banner personalizado do servidor."""
+    if message.guild is None or message.channel.id != CANAL_MISSOES_ORBS_ID:
+        return
+
+    conteudo = (message.content or "").lower()
+    if _MISSAO_ORBS_GATILHO not in conteudo:
+        return
+
+    cargo = message.guild.get_role(CARGO_MISSOES_ORBS_ID)
+    mencao_cargo = cargo.mention if cargo else ""
+
+    embed = discord.Embed(
+        title="💠 Nova missão de Orbs no ar",
+        description="Sobe ali ☝️ e confere os detalhes da missão.",
+        color=COR_RENAN,
+    )
+    embed.set_image(url=IMAGEM_MISSOES_ORBS)
+    embed.set_footer(text="👽 Renan avisou. Não diga que ele não falou.")
+
+    try:
+        await message.channel.send(
+            content=mencao_cargo,
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
+    except discord.HTTPException as e:
+        print(f"[renan-missoes] erro ao avisar missão de orbs: {e!r}")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -11352,6 +11410,12 @@ async def on_message(message: discord.Message):
         await _processar_aniversario(message)
     except Exception as e:
         print(f"[renan-aniversario] erro ao processar aniversário de {message.author}: {e!r}")
+
+    # Missões de Orbs — detecta missão nova e manda aviso extra com ping
+    try:
+        await _processar_missao_orbs(message)
+    except Exception as e:
+        print(f"[renan-missoes] erro ao processar missão de orbs de {message.author}: {e!r}")
 
     # Sugestões — canal dedicado, mensagem vira embed com votação ✅/❌
     try:
