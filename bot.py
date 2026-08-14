@@ -12,6 +12,8 @@ import urllib.parse
 from collections import defaultdict
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import io
+from PIL import Image, ImageDraw, ImageOps
 
 try:
     import yt_dlp
@@ -57,6 +59,13 @@ CANAL_BOAS_VINDAS_ID = 1501260060783939775
 CANAL_REGRAS_ID = 1501260060783939776
 # CANAL_CARGOS_ID (registro adicional) é definido mais abaixo, na seção
 # de cargos por reação — reaproveitado aqui na mensagem de boas-vindas.
+
+# 2ª mensagem de boas-vindas (canal separado, banner do demônio com
+# o avatar do membro encaixado no círculo)
+CANAL_BOAS_VINDAS_2_ID = 1501260060540665975
+BANNER_BOAS_VINDAS_2_PATH = "assets/welcome_banner_2.png"  # arquivo local, dentro da pasta do bot
+CIRCULO_2_CENTRO = (890, 315)   # centro (x, y) do círculo preto nesse banner
+CIRCULO_2_RAIO = 198            # raio, em pixels
 
 # ── Sistema de tickets de atendimento (preencha com os IDs reais) ──
 CANAL_PAINEL_TICKET_ID = 1501260061358559392   # canal onde fica fixado o painel com o botão "Abrir Ticket"
@@ -11039,12 +11048,67 @@ async def on_voice_state_update(
         print(f"[renan-ovo] erro ao processar ovo pendente de {member}: {e!r}")
 
 
+async def _baixar_avatar_bytes(member: discord.Member) -> bytes:
+    """Baixa o avatar atual do membro (PNG, 512px) direto do Discord."""
+    avatar_asset = member.display_avatar.with_size(512).with_format("png")
+    return await avatar_asset.read()
+
+
+def _compor_imagem_circular(avatar_bytes: bytes, banner_path: str, centro: tuple, raio: int) -> io.BytesIO:
+    """Recorta o avatar em círculo e cola dentro do buraco de um banner.
+    Função genérica — dá pra reaproveitar pra outros banners/canais no
+    futuro, só passando path/centro/raio diferentes. Roda em código
+    síncrono (PIL não é async), por isso é chamada via asyncio.to_thread."""
+    banner = Image.open(banner_path).convert("RGBA")
+    avatar = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
+
+    diametro = raio * 2
+    avatar = ImageOps.fit(avatar, (diametro, diametro), Image.LANCZOS)
+
+    mask = Image.new("L", (diametro, diametro), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, diametro, diametro), fill=255)
+
+    cx, cy = centro
+    posicao = (cx - raio, cy - raio)
+    banner.paste(avatar, posicao, mask)
+
+    buffer = io.BytesIO()
+    banner.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
+
+
+async def _enviar_boas_vindas_2(member: discord.Member) -> None:
+    """2ª mensagem de boas-vindas, em canal separado: banner do demônio
+    com o avatar do membro encaixado no círculo. Estilo mais direto —
+    uma linha de texto + a imagem, sem embed grande."""
+    canal2 = member.guild.get_channel(CANAL_BOAS_VINDAS_2_ID)
+    if canal2 is None:
+        return
+
+    try:
+        avatar_bytes = await _baixar_avatar_bytes(member)
+        buffer = await asyncio.to_thread(
+            _compor_imagem_circular,
+            avatar_bytes,
+            BANNER_BOAS_VINDAS_2_PATH,
+            CIRCULO_2_CENTRO,
+            CIRCULO_2_RAIO,
+        )
+        arquivo = discord.File(buffer, filename="boasvindas2.png")
+        texto = f"{member.mention} chegou. A realidade bateu."
+        await canal2.send(content=texto, file=arquivo)
+    except Exception as e:
+        print(f"[renan-boasvindas2] erro ao gerar segunda imagem de boas-vindas: {e!r}")
+
+
 @bot.event
 async def on_member_join(member: discord.Member):
     """Boas-vindas no canal dedicado, no estilo frio (mas não indiferente)
     do Renan: um único embed com avatar do membro, contagem do servidor,
     o banner de boas-vindas e os direcionamentos pra registro e regras.
-    Também loga, separadamente, qual convite foi usado pra entrar."""
+    Também dispara a 2ª mensagem de boas-vindas (canal separado, banner
+    do demônio) e loga qual convite foi usado pra entrar."""
     canal = member.guild.get_channel(CANAL_BOAS_VINDAS_ID)
     if canal is not None:
         descricao = (
@@ -11068,6 +11132,11 @@ async def on_member_join(member: discord.Member):
             await canal.send(embed=embed)
         except discord.HTTPException:
             pass
+
+    try:
+        await _enviar_boas_vindas_2(member)
+    except Exception as e:
+        print(f"[renan-boasvindas2] erro inesperado: {e!r}")
 
     try:
         await _logar_convite_usado(member)
