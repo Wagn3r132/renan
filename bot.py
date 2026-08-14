@@ -157,6 +157,19 @@ FRASES_BOAS_VINDAS = [
     "Outro sinal na escuridão. Isso importa pra mim mais do que eu gostaria de admitir. Eu sou Renan, e agora você faz parte disso também.",
 ]
 
+# Frases da 2ª mensagem de boas-vindas (canal separado, banner do demônio) —
+# tom mais dramático/épico, combinando com o texto do próprio banner
+# ("a realidade bateu", "se adapte, ou quebre"). {mention} é substituído
+# pela menção do membro na hora de enviar.
+FRASES_BOAS_VINDAS_2 = [
+    "🩸 As portas se abriram. {mention} atravessou.\nA realidade bateu — e não tem mais volta.",
+    "⛓️ Mais uma alma cruzou a fronteira.\nBem-vindo(a) à escuridão, {mention}. Aqui você se adapta, ou quebra.",
+    "💀 Um novo sinal de vida na escuridão.\n{mention}, a realidade acabou de te encontrar.",
+    "🔥 As correntes se moveram. {mention} entrou.\nNão existe conto de fadas aqui — só o que você aguentar.",
+    "🖤 {mention} chegou onde os contos de fadas morrem.\nRenan já estava esperando.",
+    "⚔️ Outro sinal cruzou o vazio. {mention} está entre nós agora.\nSe adapte, ou quebre.",
+]
+
 _COOLDOWN_SEGUNDOS = 15
 _cooldown_personalidade: dict = {}
 
@@ -11096,7 +11109,7 @@ async def _enviar_boas_vindas_2(member: discord.Member) -> None:
             CIRCULO_2_RAIO,
         )
         arquivo = discord.File(buffer, filename="boasvindas2.png")
-        texto = f"{member.mention} chegou. A realidade bateu."
+        texto = random.choice(FRASES_BOAS_VINDAS_2).format(mention=member.mention)
         await canal2.send(content=texto, file=arquivo)
     except Exception as e:
         print(f"[renan-boasvindas2] erro ao gerar segunda imagem de boas-vindas: {e!r}")
