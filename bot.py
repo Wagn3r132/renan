@@ -2599,30 +2599,133 @@ async def on_invite_delete(invite: discord.Invite):
 
 
 # ══════════════════════════════════════════════════════════════════
-# MISSÕES DE ORBS — aviso extra
+# MISSÕES DE ORBS — aviso extra + `.pontos`
 #
 # No canal CANAL_MISSOES_ORBS_ID (onde as missões de Orbs aparecem),
-# quando uma mensagem de missão nova é detectada, o Renan manda um
-# aviso extra ali mesmo: marca CARGO_MISSOES_ORBS_ID e usa o banner
-# IMAGEM_MISSOES_ORBS, pra chamar mais atenção pra missão que acabou
-# de aparecer.
+# quando uma missão nova é detectada — seja em mensagem nova OU numa
+# mensagem editada (essas mensagens de missão costumam ser editadas
+# no lugar em vez de recriadas) — o Renan:
+#   1) manda um aviso extra ali mesmo, marcando CARGO_MISSOES_ORBS_ID
+#      e usando o banner IMAGEM_MISSOES_ORBS;
+#   2) guarda os dados da missão (nome, recompensa, tipo, duração) em
+#      disco, pra poder listar depois com `.pontos`.
+# O aviso extra só dispara quando o NOME da missão muda (edições que
+# só atualizam "termina em X dias", por exemplo, não disparam de novo).
 # ══════════════════════════════════════════════════════════════════
 
 _MISSAO_ORBS_GATILHO = "nova missão disponível"
+_MISSOES_ORBS_DATA_PATH = os.getenv("MISSOES_ORBS_DATA_PATH", "/data/missoes_orbs.json")
 
 
-async def _processar_missao_orbs(message: discord.Message) -> None:
-    """Detecta uma missão de Orbs nova no canal configurado e manda um
-    aviso extra logo em seguida, no mesmo canal, marcando o cargo de
-    notificação e com o banner personalizado do servidor."""
-    if message.guild is None or message.channel.id != CANAL_MISSOES_ORBS_ID:
+def _carregar_dados_missoes_orbs() -> dict:
+    try:
+        with open(_MISSOES_ORBS_DATA_PATH, "r", encoding="utf-8") as f:
+            dados = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        dados = {}
+    dados.setdefault("ativas", {})       # slug -> dados da missão
+    dados.setdefault("ultimo_nome", None)  # nome da última missão avisada (evita aviso duplicado)
+    return dados
+
+
+def _salvar_dados_missoes_orbs(dados: dict) -> None:
+    try:
+        pasta = os.path.dirname(_MISSOES_ORBS_DATA_PATH)
+        if pasta:
+            os.makedirs(pasta, exist_ok=True)
+        with open(_MISSOES_ORBS_DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        print(f"[renan-missoes] não consegui salvar {_MISSOES_ORBS_DATA_PATH}: {e!r}")
+
+
+def _limpar_markdown_missao(texto: str) -> str:
+    """Tira negrito/itálico/links simples de markdown de uma linha."""
+    texto = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", texto)  # [texto](link) -> texto
+    texto = re.sub(r"[*_~`]", "", texto)
+    return texto.strip()
+
+
+def _extrair_dados_missao(conteudo: str) -> dict | None:
+    """Tenta puxar nome, recompensa, tipo e duração de uma mensagem de
+    anúncio de missão de Orbs. Retorna None se nem o nome for encontrado
+    (aí não dá pra saber que missão é essa)."""
+    dados = {"nome": None, "recompensa": None, "tipo": None, "duracao": None}
+
+    for linha in conteudo.splitlines():
+        limpa = _limpar_markdown_missao(linha)
+        baixa = limpa.lower()
+
+        if "nova missão disponível" in baixa and ":" in limpa:
+            dados["nome"] = limpa.split(":", 1)[1].strip()
+        elif "recompensa" in baixa and ":" in limpa and dados["recompensa"] is None:
+            dados["recompensa"] = limpa.split(":", 1)[1].strip()
+        elif "tipo de missão" in baixa and ":" in limpa:
+            dados["tipo"] = limpa.split(":", 1)[1].strip()
+        elif "duração" in baixa and ":" in limpa:
+            dados["duracao"] = limpa.split(":", 1)[1].strip()
+
+    if not dados["nome"]:
+        return None
+    return dados
+
+
+def _calcular_expiracao_missao(duracao_texto: str | None) -> str | None:
+    """Se a duração vier no formato 'Termina em X dias', calcula a data
+    de expiração. Formatos diferentes (ou ausência de duração) só não
+    entram no cálculo — a missão continua listada até ser substituída."""
+    if not duracao_texto:
+        return None
+    m = re.search(r"(\d+)\s*dias?", duracao_texto, re.IGNORECASE)
+    if not m:
+        return None
+    from datetime import timedelta
+    return (datetime.now() + timedelta(days=int(m.group(1)))).isoformat()
+
+
+def _slug_missao(nome: str) -> str:
+    slug = unicodedata.normalize("NFKD", nome).encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower()
+    return slug or "missao"
+
+
+async def _processar_missao_orbs(message_ou_none: discord.Message, conteudo: str | None = None) -> None:
+    """Detecta uma missão de Orbs (nova ou editada) no canal configurado.
+    Manda o aviso extra só quando o nome da missão muda, e sempre atualiza
+    os dados guardados em disco (usados pelo `.pontos`)."""
+    if message_ou_none.guild is None or message_ou_none.channel.id != CANAL_MISSOES_ORBS_ID:
         return
 
-    conteudo = (message.content or "").lower()
-    if _MISSAO_ORBS_GATILHO not in conteudo:
+    texto = conteudo if conteudo is not None else (message_ou_none.content or "")
+    if _MISSAO_ORBS_GATILHO not in texto.lower():
         return
 
-    cargo = message.guild.get_role(CARGO_MISSOES_ORBS_ID)
+    info = _extrair_dados_missao(texto)
+    if info is None:
+        return  # achou o gatilho mas não deu pra extrair o nome — melhor não arriscar dado errado
+
+    dados = _carregar_dados_missoes_orbs()
+    ativas = dados.setdefault("ativas", {})
+
+    slug = _slug_missao(info["nome"])
+    ativas[slug] = {
+        "nome": info["nome"],
+        "recompensa": info["recompensa"],
+        "tipo": info["tipo"],
+        "duracao": info["duracao"],
+        "expira_em": _calcular_expiracao_missao(info["duracao"]),
+        "atualizado_em": datetime.now().isoformat(),
+    }
+
+    e_missao_nova = dados.get("ultimo_nome") != info["nome"]
+    dados["ultimo_nome"] = info["nome"]
+    _salvar_dados_missoes_orbs(dados)
+
+    if not e_missao_nova:
+        return  # mesma missão de antes (edição só atualizando prazo, por ex.) — não avisa de novo
+
+    guild = message_ou_none.guild
+    cargo = guild.get_role(CARGO_MISSOES_ORBS_ID)
     mencao_cargo = cargo.mention if cargo else ""
 
     embed = discord.Embed(
@@ -2634,13 +2737,75 @@ async def _processar_missao_orbs(message: discord.Message) -> None:
     embed.set_footer(text="👽 Renan avisou. Não diga que ele não falou.")
 
     try:
-        await message.channel.send(
+        await message_ou_none.channel.send(
             content=mencao_cargo,
             embed=embed,
             allowed_mentions=discord.AllowedMentions(roles=True),
         )
     except discord.HTTPException as e:
         print(f"[renan-missoes] erro ao avisar missão de orbs: {e!r}")
+
+
+def _missoes_orbs_ativas() -> list[dict]:
+    """Missões guardadas que ainda não expiraram (ou sem data de
+    expiração calculável — aí fica listada até ser substituída)."""
+    dados = _carregar_dados_missoes_orbs()
+    agora = datetime.now()
+    resultado = []
+    for info in dados.get("ativas", {}).values():
+        expira_em = info.get("expira_em")
+        if expira_em:
+            try:
+                if datetime.fromisoformat(expira_em) < agora:
+                    continue  # expirou — não lista
+            except ValueError:
+                pass
+        resultado.append(info)
+    return resultado
+
+
+@bot.command(name="pontos")
+async def pontos(ctx: commands.Context):
+    """`.pontos` — lista as missões de Orbs disponíveis que o Renan
+    detectou até agora (baseado no que apareceu em <#CANAL_MISSOES_ORBS_ID>)."""
+    missoes = _missoes_orbs_ativas()
+
+    embed = discord.Embed(
+        title="💠 Missões de Orbs disponíveis",
+        color=COR_RENAN,
+    )
+
+    if not missoes:
+        embed.description = (
+            "Nenhuma missão na lista agora. Assim que uma nova aparecer "
+            f"em <#{CANAL_MISSOES_ORBS_ID}>, eu guardo ela aqui."
+        )
+    else:
+        for info in missoes:
+            valor = ""
+            if info.get("recompensa"):
+                valor += f"🔷 **Recompensa:** {info['recompensa']}\n"
+            if info.get("tipo"):
+                valor += f"⏱️ **Tipo:** {info['tipo']}\n"
+            if info.get("duracao"):
+                valor += f"⌛ **Duração:** {info['duracao']}\n"
+            embed.add_field(name=f"🎫 {info['nome']}", value=valor or "—", inline=False)
+
+    embed.set_footer(text="👽 Renan  •  lista baseada no que ele viu passar")
+    await ctx.send(embed=embed)
+
+
+@bot.event
+async def on_message_edit(before: discord.Message, after: discord.Message):
+    """As mensagens de missão de Orbs costumam ser editadas no lugar
+    (em vez de uma mensagem nova a cada missão) — por isso a detecção
+    também roda em cima de edições, não só de mensagens novas."""
+    if after.author.bot:
+        return
+    try:
+        await _processar_missao_orbs(after)
+    except Exception as e:
+        print(f"[renan-missoes] erro ao processar edição de missão de orbs: {e!r}")
 
 
 # ══════════════════════════════════════════════════════════════════
