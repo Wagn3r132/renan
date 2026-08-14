@@ -67,6 +67,12 @@ BANNER_BOAS_VINDAS_2_PATH = "assets/welcome_banner_2.png"  # arquivo local, dent
 CIRCULO_2_CENTRO = (890, 315)   # centro (x, y) do círculo preto nesse banner
 CIRCULO_2_RAIO = 198            # raio, em pixels
 
+# Mensagem de SAÍDA (banner "ADEUS", avatar de quem saiu encaixado no círculo)
+CANAL_SAIDA_ID = 1501260060540665976
+BANNER_SAIDA_PATH = "assets/banner_saida.png"  # arquivo local, dentro da pasta do bot
+CIRCULO_SAIDA_CENTRO = (895, 329)   # centro (x, y) do círculo preto nesse banner
+CIRCULO_SAIDA_RAIO = 220            # raio, em pixels
+
 # ── Sistema de tickets de atendimento (preencha com os IDs reais) ──
 CANAL_PAINEL_TICKET_ID = 1501260061358559392   # canal onde fica fixado o painel com o botão "Abrir Ticket"
 CATEGORIA_TICKETS_ID = 1501260061358559391  # categoria onde os canais de ticket são criados
@@ -168,6 +174,17 @@ FRASES_BOAS_VINDAS_2 = [
     "🔥 As correntes se moveram. {mention} entrou.\nNão existe conto de fadas aqui — só o que você aguentar.",
     "🖤 {mention} chegou onde os contos de fadas morrem.\nRenan já estava esperando.",
     "⚔️ Outro sinal cruzou o vazio. {mention} está entre nós agora.\nSe adapte, ou quebre.",
+]
+
+# Frases da mensagem de SAÍDA (banner "ADEUS") — {saida} vira o nome/tag
+# de quem saiu (não dá pra usar menção depois que a pessoa já saiu do
+# servidor, então uso o nome mesmo).
+FRASES_SAIDA = [
+    "🖤 {saida} se foi.\nNem toda história tem um próximo capítulo — a de {saida} parou aqui.",
+    "⛓️ Mais um sinal que se apagou.\n{saida} saiu. Até a próxima — se ela existir.",
+    "💔 {saida} atravessou a saída.\nEu vou lembrar. É o mínimo que posso fazer.",
+    "🕯️ Uma vela se apaga na escuridão.\n{saida} não está mais aqui.",
+    "🥀 Adeus, {saida}.\nAlgumas histórias terminam sem aviso. Essa foi uma delas.",
 ]
 
 _COOLDOWN_SEGUNDOS = 15
@@ -11113,6 +11130,47 @@ async def _enviar_boas_vindas_2(member: discord.Member) -> None:
         await canal2.send(content=texto, file=arquivo)
     except Exception as e:
         print(f"[renan-boasvindas2] erro ao gerar segunda imagem de boas-vindas: {e!r}")
+
+
+async def _enviar_saida(member: discord.Member) -> None:
+    """Mensagem de saída: banner "ADEUS" com o avatar de quem saiu
+    encaixado no círculo. Dispara em on_member_remove — a pessoa já não
+    está mais no servidor nesse ponto, então uso o nome dela em vez de
+    menção (menção de quem já saiu não notifica, mas também não conta
+    como marcação de verdade — uso o nome pra ficar mais legível)."""
+    canal_saida = member.guild.get_channel(CANAL_SAIDA_ID)
+    if canal_saida is None:
+        return
+
+    try:
+        avatar_asset = member.display_avatar.with_size(512).with_format("png")
+        avatar_bytes = await avatar_asset.read()
+        buffer = await asyncio.to_thread(
+            _compor_imagem_circular,
+            avatar_bytes,
+            BANNER_SAIDA_PATH,
+            CIRCULO_SAIDA_CENTRO,
+            CIRCULO_SAIDA_RAIO,
+        )
+        arquivo = discord.File(buffer, filename="saida.png")
+        nome_saida = member.display_name
+        texto = random.choice(FRASES_SAIDA).format(saida=nome_saida)
+        await canal_saida.send(content=texto, file=arquivo)
+    except Exception as e:
+        print(f"[renan-saida] erro ao gerar imagem de saída: {e!r}")
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    """Dispara quando alguém sai (ou é removido) do servidor: manda a
+    mensagem de despedida no canal dedicado, com o banner "ADEUS" e o
+    avatar de quem saiu encaixado no círculo."""
+    if member.bot:
+        return
+    try:
+        await _enviar_saida(member)
+    except Exception as e:
+        print(f"[renan-saida] erro inesperado em on_member_remove: {e!r}")
 
 
 @bot.event
