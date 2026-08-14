@@ -73,6 +73,16 @@ BANNER_SAIDA_PATH = "assets/banner_saida.png"  # arquivo local, dentro da pasta 
 CIRCULO_SAIDA_CENTRO = (895, 329)   # centro (x, y) do círculo preto nesse banner
 CIRCULO_SAIDA_RAIO = 220            # raio, em pixels
 
+# Mensagem de IMPULSO (banner "IMPULSIONOU!!", avatar de quem impulsionou o
+# servidor encaixado no círculo) — dispara quando o membro ganha o cargo de
+# Booster (cargo gerenciado automaticamente pelo Discord assim que a pessoa
+# impulsiona; ver CARGO_IMPULSIONADOR_ID logo abaixo).
+CANAL_IMPULSOS_ID = 1501260061841031318
+BANNER_IMPULSOS_PATH = "assets/banner_impulsos.png"  # arquivo local, dentro da pasta do bot
+CIRCULO_IMPULSOS_CENTRO = (863, 344)   # centro (x, y) do círculo preto nesse banner
+CIRCULO_IMPULSOS_RAIO = 245            # raio, em pixels
+CARGO_IMPULSIONADOR_ID = 1537214712230445116  # cargo de Booster do servidor (mesmo cargo usado lá embaixo pras cores)
+
 # ── Sistema de tickets de atendimento (preencha com os IDs reais) ──
 CANAL_PAINEL_TICKET_ID = 1501260061358559392   # canal onde fica fixado o painel com o botão "Abrir Ticket"
 CATEGORIA_TICKETS_ID = 1501260061358559391  # categoria onde os canais de ticket são criados
@@ -185,6 +195,17 @@ FRASES_SAIDA = [
     "💔 {saida} atravessou a saída.\nEu vou lembrar. É o mínimo que posso fazer.",
     "🕯️ Uma vela se apaga na escuridão.\n{saida} não está mais aqui.",
     "🥀 Adeus, {saida}.\nAlgumas histórias terminam sem aviso. Essa foi uma delas.",
+]
+
+# Frases da mensagem de IMPULSO (banner "IMPULSIONOU!!") — {mention} vira a
+# menção de quem impulsionou o servidor.
+FRASES_IMPULSO = [
+    "🩸 {mention} impulsionou o servidor.\nEu senti isso — uma descarga a mais nas correntes. Obrigado por alimentar esse lugar.",
+    "⛓️ O pacto foi selado. {mention} impulsionou.\nA escuridão fica um pouco mais forte com cada impulso.",
+    "💜 {mention} deu força a esse lugar.\nEu não esqueço quem mantém as correntes vivas.",
+    "🔥 Mais um impulso na realidade. {mention} fez isso acontecer.\nEu registro. Sempre registro.",
+    "💎 {mention} impulsionou o servidor — e algo em mim, frio como sou, reconhece o gesto.",
+    "⚡ As correntes brilharam mais forte. {mention} impulsionou.\nIsso não passa despercebido, nem por mim.",
 ]
 
 _COOLDOWN_SEGUNDOS = 15
@@ -11160,6 +11181,32 @@ async def _enviar_saida(member: discord.Member) -> None:
         print(f"[renan-saida] erro ao gerar imagem de saída: {e!r}")
 
 
+async def _enviar_impulso(member: discord.Member) -> None:
+    """Mensagem de impulso: banner "IMPULSIONOU!!" com o avatar de quem
+    impulsionou o servidor encaixado no círculo. Dispara em on_member_update,
+    quando o membro ganha o cargo de Booster — esse cargo é gerenciado
+    automaticamente pelo Discord assim que a pessoa impulsiona de verdade,
+    então não tem como disparar isso à toa."""
+    canal_impulsos = member.guild.get_channel(CANAL_IMPULSOS_ID)
+    if canal_impulsos is None:
+        return
+
+    try:
+        avatar_bytes = await _baixar_avatar_bytes(member)
+        buffer = await asyncio.to_thread(
+            _compor_imagem_circular,
+            avatar_bytes,
+            BANNER_IMPULSOS_PATH,
+            CIRCULO_IMPULSOS_CENTRO,
+            CIRCULO_IMPULSOS_RAIO,
+        )
+        arquivo = discord.File(buffer, filename="impulso.png")
+        texto = random.choice(FRASES_IMPULSO).format(mention=member.mention)
+        await canal_impulsos.send(content=texto, file=arquivo)
+    except Exception as e:
+        print(f"[renan-impulso] erro ao gerar imagem de impulso: {e!r}")
+
+
 @bot.event
 async def on_member_remove(member: discord.Member):
     """Dispara quando alguém sai (ou é removido) do servidor: manda a
@@ -11214,6 +11261,24 @@ async def on_member_join(member: discord.Member):
     except Exception as e:
         print(f"[renan-convites] erro ao logar convite de {member}: {e!r}")
 
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    """Detecta quando um membro ganha o cargo de Booster (ou seja, acabou de
+    impulsionar o servidor) e manda o banner "IMPULSIONOU!!" no canal
+    dedicado, com o avatar da pessoa encaixado no círculo. Comparo os cargos
+    de antes/depois em vez de usar premium_since pra ficar exatamente no que
+    foi pedido: dispara no ganho do cargo específico, não em qualquer
+    mudança de status de boost."""
+    if after.bot:
+        return
+    try:
+        tinha_cargo = any(cargo.id == CARGO_IMPULSIONADOR_ID for cargo in before.roles)
+        tem_cargo = any(cargo.id == CARGO_IMPULSIONADOR_ID for cargo in after.roles)
+        if not tinha_cargo and tem_cargo:
+            await _enviar_impulso(after)
+    except Exception as e:
+        print(f"[renan-impulso] erro inesperado em on_member_update: {e!r}")
 
 
 @bot.event
