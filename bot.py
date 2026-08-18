@@ -23,7 +23,7 @@ except ImportError:
     import yt_dlp
 
 try:
-    from spotify_scraper import AsyncSpotifyClient   # metadata de link do Spotify — .tocar
+    from spotify_scraper import AsyncSpotifyClient   # metadata de link do Spotify — !tocar
 except ImportError:
     import subprocess, sys
     subprocess.check_call([sys.executable, "-m", "pip", "install", "spotifyscraper"])
@@ -40,7 +40,7 @@ intents.members = True
 intents.guilds = True
 intents.invites = True
 
-bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # ══════════════════════════════════════════════
 # CONFIGURAÇÃO — preencha com seus valores reais
@@ -50,7 +50,7 @@ TOKEN = os.getenv("TOKEN")
 # Ainda não configurado de propósito — IDs de dono, cargos especiais,
 # categoria fixa de call de música, etc. entram aqui quando você for
 # personalizar o Renan pro seu servidor.
-CRIADOR_ID = None  # preencha com seu ID de usuário quando quiser restringir comandos de dono
+CRIADOR_ID = 769951556388257812  # Reality — seu ID de usuário
 
 COR_RENAN = 0xB5121B  # vermelho — cor usada nos embeds do Renan
 
@@ -393,18 +393,18 @@ async def _checar_personalidade(message: discord.Message) -> None:
 # ══════════════════════════════════════════════════════════════════
 # SISTEMA DE MÚSICA COM FILA E PAINEL — Renan
 #
-# Uso: .tocar <link>   — se nada tocando, toca na hora + manda o painel
+# Uso: !tocar <link>   — se nada tocando, toca na hora + manda o painel
 #                         com botões. Se já tem algo tocando, entra na
 #                         fila e o painel se atualiza sozinho mostrando
 #                         as próximas.
 #                         Também funciona com PLAYLISTS e ÁLBUNS inteiros
 #                         (YouTube, Spotify e SoundCloud/sets) — todas as
 #                         músicas da playlist entram na fila de uma vez.
-#      .sair            — limpa a fila inteira, para e desconecta.
-#                         (aliases: .parar, .stop)
+#      !sair            — limpa a fila inteira, para e desconecta.
+#                         (aliases: !parar, !stop)
 #
 # Quando uma música acaba, a próxima da fila entra automaticamente.
-# Também dá pra só colar um link no chat (sem .tocar) estando numa call.
+# Também dá pra só colar um link no chat (sem !tocar) estando numa call.
 # ══════════════════════════════════════════════════════════════════
 
 # IP de datacenter (Railway, VPS, etc.) costuma ser bloqueado pelo YouTube
@@ -621,7 +621,7 @@ def _criar_embed_painel(estado: "_EstadoMusica") -> discord.Embed:
     if atual is None:
         embed = discord.Embed(
             title="👽 Nada tocando",
-            description="Fila vazia. Manda algo com `.tocar`.",
+            description="Fila vazia. Manda algo com `!tocar`.",
             color=0x2F3136,
         )
     else:
@@ -645,7 +645,7 @@ def _criar_embed_painel(estado: "_EstadoMusica") -> discord.Embed:
     else:
         embed.add_field(name="Próximas", value="Nenhuma. Fila vazia.", inline=False)
 
-    embed.set_footer(text="👽 Renan  •  use os botões ou .sair pra encerrar")
+    embed.set_footer(text="👽 Renan  •  use os botões ou !sair pra encerrar")
     return embed
 
 
@@ -670,7 +670,7 @@ async def _tocar_proxima(guild: discord.Guild) -> None:
     música termina (via callback 'after' do player)."""
     estado = _musica_estado.get(guild.id)
     if estado is None:
-        return  # fila foi encerrada via .sair — não toca mais nada
+        return  # fila foi encerrada via !sair — não toca mais nada
 
     vc = guild.voice_client
     if vc is None:
@@ -899,7 +899,7 @@ class PainelMusica(discord.ui.View):
 
 
 # Reconhece link de YouTube, Spotify e SoundCloud soltos numa mensagem
-# (sem precisar do comando .tocar na frente).
+# (sem precisar do comando !tocar na frente).
 _REGEX_LINK_MUSICA = re.compile(
     r"https?://(?:www\.|music\.)?youtube\.com/\S+"
     r"|https?://youtu\.be/\S+"
@@ -910,7 +910,7 @@ _REGEX_LINK_MUSICA = re.compile(
 
 
 async def _enfileirar_musica(guild, canal_voz, canal_texto, autor, link: str) -> None:
-    """Lógica compartilhada entre .tocar e o auto-play de link solto no
+    """Lógica compartilhada entre !tocar e o auto-play de link solto no
     chat: conecta na call se precisar, extrai o áudio e bota na fila
     (ou toca na hora, se nada estiver tocando ainda)."""
     try:
@@ -1010,7 +1010,7 @@ async def _enfileirar_playlist(guild, canal_voz, canal_texto, autor, link: str) 
 
 
 async def _processar_link_solto(message: discord.Message) -> None:
-    """Se a mensagem tiver um link de música solto (sem usar .tocar) e o
+    """Se a mensagem tiver um link de música solto (sem usar !tocar) e o
     autor estiver numa call, bota na fila sozinho."""
     if message.guild is None:
         return  # DM não tem estado de voz (message.author aqui é User, não Member)
@@ -1018,7 +1018,7 @@ async def _processar_link_solto(message: discord.Message) -> None:
     if message.author.voice is None or message.author.voice.channel is None:
         return  # ninguém numa call, ignora silenciosamente
 
-    # Se a mensagem já é um comando válido (ex.: ".tocar <link>"), quem
+    # Se a mensagem já é um comando válido (ex.: "!tocar <link>"), quem
     # enfileira é o próprio handler do comando — sem esse check, a mesma
     # música (ou playlist inteira) acaba entrando na fila DUAS vezes.
     ctx = await bot.get_context(message)
@@ -1042,16 +1042,16 @@ async def _processar_link_solto(message: discord.Message) -> None:
 
 @bot.command(name="tocar")
 async def cmd_tocar(ctx, *, link: str = None):
-    """Toca um link na hora (se nada tocando) ou bota na fila. Uso: .tocar <link>"""
+    """Toca um link na hora (se nada tocando) ou bota na fila. Uso: !tocar <link>"""
     if ctx.guild is None:
         return
 
     if not link:
         await ctx.send(
-            "Uso: `.tocar <link>` — manda o link (ou nome da música) que eu "
+            "Uso: `!tocar <link>` — manda o link (ou nome da música) que eu "
             "boto na fila. YouTube, Spotify e SoundCloud funcionam, e "
             "**playlists/álbuns inteiros também**. Também dá pra só colar o "
-            "link no chat sem `.tocar`, se você estiver numa call."
+            "link no chat sem `!tocar`, se você estiver numa call."
         )
         return
 
@@ -1129,7 +1129,7 @@ async def cmd_letras(ctx):
 
     estado = _musica_estado.get(ctx.guild.id)
     if estado is None or estado.tocando is None:
-        await ctx.send("Nada tocando agora. Bota uma música com `.tocar` primeiro.")
+        await ctx.send("Nada tocando agora. Bota uma música com `!tocar` primeiro.")
         return
 
     titulo = estado.tocando["titulo"]
@@ -1518,7 +1518,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 # Dentro do ticket tem um botão "🔒 Fechar Ticket" — SÓ A STAFF pode
 # usar, e ao fechar é pedido o motivo do encerramento.
 #
-# FEEDBACK: a staff usa `.feedback` dentro do ticket (antes de fechar)
+# FEEDBACK: a staff usa `!feedback` dentro do ticket (antes de fechar)
 # pra mandar, no próprio canal, um botão "⭐ Avaliar Atendimento" com
 # instruções de como preencher certinho (nota 1-5, experiência,
 # comentário) — o dono do ticket é marcado na mensagem. Quando a
@@ -2012,7 +2012,7 @@ async def cmd_feedback(ctx):
     dono_id = next((uid for uid, cid in abertos.items() if cid == ctx.channel.id), None)
     if dono_id is None:
         await ctx.send(
-            "Esse canal não é um ticket aberto — o `.feedback` só funciona "
+            "Esse canal não é um ticket aberto — o `!feedback` só funciona "
             "dentro do canal do ticket, antes de fechar."
         )
         return
@@ -2400,7 +2400,7 @@ _CATEGORIAS_PROTEGIDAS_DELETAR = {CATEGORIA_TICKETS_ID, CATEGORIA_REFERENCIA_GRU
 
 
 class ViewConfirmarDeletarGrupo(discord.ui.View):
-    """Confirmação do `.deletar` — só quem pediu (ou a staff) pode
+    """Confirmação do `!deletar` — só quem pediu (ou a staff) pode
     confirmar ou cancelar. Ao confirmar, apaga o(s) canal(is) e a
     categoria alguns segundos depois (dá tempo de ler a mensagem)."""
 
@@ -2458,7 +2458,7 @@ async def cmd_deletar_grupo(ctx: commands.Context):
     """Apaga o grupo (categoria + todos os canais dentro dela, incluindo
     o chat e a call) a partir de QUALQUER canal desse grupo — pede
     confirmação antes. Uso: dentro do chat (ou de outro canal texto) do
-    grupo, manda `.deletar` (aliases: `.delete`, `.deletargrupo`)."""
+    grupo, manda `!deletar` (aliases: `!delete`, `!deletargrupo`)."""
     if ctx.guild is None:
         return
 
@@ -3147,7 +3147,7 @@ async def on_invite_delete(invite: discord.Invite):
 
 
 # ══════════════════════════════════════════════════════════════════
-# MISSÕES DE ORBS — aviso extra + `.pontos`
+# MISSÕES DE ORBS — aviso extra + `!pontos`
 #
 # No canal CANAL_MISSOES_ORBS_ID (onde as missões de Orbs aparecem),
 # quando uma missão nova é detectada — seja em mensagem nova OU numa
@@ -3156,7 +3156,7 @@ async def on_invite_delete(invite: discord.Invite):
 #   1) manda um aviso extra ali mesmo, marcando CARGO_MISSOES_ORBS_ID
 #      e usando o banner IMAGEM_MISSOES_ORBS;
 #   2) guarda os dados da missão (nome, recompensa, tipo, duração) em
-#      disco, pra poder listar depois com `.pontos`.
+#      disco, pra poder listar depois com `!pontos`.
 # O aviso extra só dispara quando o NOME da missão muda (edições que
 # só atualizam "termina em X dias", por exemplo, não disparam de novo).
 # ══════════════════════════════════════════════════════════════════
@@ -3240,7 +3240,7 @@ def _slug_missao(nome: str) -> str:
 async def _processar_missao_orbs(message_ou_none: discord.Message, conteudo: str | None = None) -> None:
     """Detecta uma missão de Orbs (nova ou editada) no canal configurado.
     Manda o aviso extra só quando o nome da missão muda, e sempre atualiza
-    os dados guardados em disco (usados pelo `.pontos`)."""
+    os dados guardados em disco (usados pelo `!pontos`)."""
     if message_ou_none.guild is None or message_ou_none.channel.id != CANAL_MISSOES_ORBS_ID:
         return
 
@@ -3314,7 +3314,7 @@ def _missoes_orbs_ativas() -> list[dict]:
 
 @bot.command(name="pontos")
 async def pontos(ctx: commands.Context):
-    """`.pontos` — lista as missões de Orbs disponíveis que o Renan
+    """`!pontos` — lista as missões de Orbs disponíveis que o Renan
     detectou até agora (baseado no que apareceu em <#CANAL_MISSOES_ORBS_ID>)."""
     missoes = _missoes_orbs_ativas()
 
@@ -3578,7 +3578,7 @@ async def _processar_sugestao(message: discord.Message) -> None:
 #   CANAL_XP_ID                 → canal do ranking fixo de XP/nível (JÁ CONFIGURADO)
 #   CARGO_XP_ID                 → cargo de quem participa do ranking de XP
 #   CANAL_LOGS_RPG_ID           → canal de logs do RPG (JÁ CONFIGURADO)
-#   CANAL_CRIATURAS_ID          → canal onde a coleção do .criaturas é enviada (JÁ CONFIGURADO)
+#   CANAL_CRIATURAS_ID          → canal onde a coleção do !criaturas é enviada (JÁ CONFIGURADO)
 #   CANAL_ARENA_RPG_ID          → único canal onde desafios ("eu te desafio @alguém") podem
 #                                  rolar (JÁ CONFIGURADO)
 #   _BAU_CANAL_ID                → canal onde o Baú pode aparecer
@@ -3747,7 +3747,7 @@ def _calcular_nivel(xp_total: int):
 def _xp_total_para_nivel(nivel: int) -> int:
     """Inverso de _calcular_nivel: quanto de XP total é preciso acumular pra
     estar bem no COMEÇO de um nível específico (0 xp dentro dele). Usado
-    pelo `.darlevel` pra definir manualmente o nível de alguém."""
+    pelo `!darlevel` pra definir manualmente o nível de alguém."""
     total = 0
     for n in range(max(nivel, 0)):
         total += _xp_necessario_para_nivel(n)
@@ -4367,22 +4367,22 @@ def _montar_embed_info_batalha() -> discord.Embed:
             "pra sua coleção pra sempre. Quem perde não ganha nada disso. 🌀 Elementais, 🐺 Bestas, 🦴 Fósseis, "
             "🌌 Secretas e 🐉 Míticas seguem caminhos próprios pra desbloquear — veja os itens 8️⃣, 9️⃣, 🔟 e 1️⃣2️⃣ "
             "abaixo. Veja a lista completa na 📖 **Enciclopédia** (mensagem fixa aqui embaixo) e confira sua "
-            "coleção com `.criaturas`.\n\n"
+            "coleção com `!criaturas`.\n\n"
             "**5️⃣ ⭐ Nível de Capacidade — quanto mais usa, mais forte fica**\n"
             "Além da raridade, toda criatura tem um **Nível de Capacidade** individual (de 1 a "
             f"{_NIVEL_CRIATURA_MAX}), que é **por pessoa**. Ela sempre começa no Nível 1, e cada vez que "
             "você a invoca numa batalha — ganhando ou perdendo, não importa — ela ganha experiência e "
             "pode subir de nível, até o teto. Ou seja: se duas pessoas tiverem a MESMA criatura, mas uma "
             "já batalhou muito mais com ela, a mais usada leva vantagem no confronto, mesmo sendo a "
-            "mesma raridade. Confira o nível de cada uma sua com `.criaturas`.\n\n"
+            "mesma raridade. Confira o nível de cada uma sua com `!criaturas`.\n\n"
             "**6️⃣ 🌟 Criatura favorita**\n"
-            "Use `.favorito <nome da criatura>` pra escolher uma favorita entre as que você já tem — "
+            "Use `!favorito <nome da criatura>` pra escolher uma favorita entre as que você já tem — "
             "a partir daí, ela é **sempre** a escolhida nas suas batalhas, sem sorteio nenhum. Só que "
             f"depois de `{_FAVORITO_USOS_ATE_CANSAR}` usos seguidos ela **cansa**: some da jogada, suas "
             "batalhas voltam a sortear aleatoriamente, e ela entra num cooldown de "
             f"`{_FAVORITO_COOLDOWN_SEGUNDOS // 60} min` até poder ser favoritada de novo (ou você pode "
-            "trocar de favorita a qualquer momento com `.favorito <outro nome>`, ou tirar com "
-            "`.favorito remover`). Veja `.favorito` sozinho pra conferir o status atual.\n\n"
+            "trocar de favorita a qualquer momento com `!favorito <outro nome>`, ou tirar com "
+            "`!favorito remover`). Veja `!favorito` sozinho pra conferir o status atual.\n\n"
             "**7️⃣ ⚔️ Hierarquia de força das raridades**\n"
             "Raridade mais alta = criatura mais forte, mas ninguém fica sem chance nenhuma! "
             "A cada raridade de distância entre as duas criaturas, a chance da mais forte sobe um "
@@ -4415,7 +4415,7 @@ def _montar_embed_info_batalha() -> discord.Embed:
             f"`{_MITICO_CHANCE_DESBLOQUEIO * 100:.0f}%` de destravar um.\n\n"
             "**🔟 🦴 Fósseis — só desenterrados em call**\n"
             "Um degrau abaixo das 🌌 Secretas, mas mais fortes que as 🟡 Lendárias. Não entram no sorteio "
-            "normal, no 🪙 Baú nem no `.ovo` — a ÚNICA forma de conseguir um é **vencendo** uma batalha de "
+            "normal, no 🪙 Baú nem no `!ovo` — a ÚNICA forma de conseguir um é **vencendo** uma batalha de "
             "desafio com você **E** a pessoa que te desafiou (ou que você desafiou) **os dois numa call de "
             f"voz** no momento em que a batalha termina. Só nessas condições rola uma chance de "
             f"`{_FOSSIL_CHANCE_DESBLOQUEIO * 100:.0f}%` de desenterrar um Fóssil novo — se algum dos dois "
@@ -4423,7 +4423,7 @@ def _montar_embed_info_batalha() -> discord.Embed:
             "**1️⃣1️⃣ 🐾 Pets — companheiros de suporte contra Boss**\n"
             f"Leve uma criatura 🔵 Rara até o Nível de Capacidade `{_PET_NIVEL_DESBLOQUEIO}` e "
             "ganhe, de graça, um Pet sorteado. Pets não batalham no PvP — são suporte: EQUIPADOS "
-            f"(`.equiparpet <nome>`), somam entre `{_PET_BONUS_BOSS_NIVEL1*100:.0f}%` e "
+            f"(`!equiparpet <nome>`), somam entre `{_PET_BONUS_BOSS_NIVEL1*100:.0f}%` e "
             f"`{_PET_BONUS_BOSS_NIVEL5*100:.0f}%` na chance de vencer qualquer Boss (conforme o "
             "Nível do Pet, de 1 a 5) e têm chance de upar uma das suas criaturas depois de uma "
             "vitória. Só sobem de Nível enfrentando Boss, e cada um destrava uma habilidade "
@@ -4559,7 +4559,7 @@ def _montar_embed_enciclopedia() -> discord.Embed:
             "\n".join(f"• {p['nome']}" for p in _PETS) + "\n\n"
             f"Desbloqueados ao levar uma criatura 🔵 Rara até o Nível de Capacidade "
             f"`{_PET_NIVEL_DESBLOQUEIO}` — não entram em batalha, são SUPORTE: quando equipados "
-            "(`.equiparpet <nome>`), somam bônus na chance de vencer Boss e podem upar suas "
+            "(`!equiparpet <nome>`), somam bônus na chance de vencer Boss e podem upar suas "
             "criaturas. Confira os detalhes de cada um no menu abaixo!"
         ),
         inline=False,
@@ -5143,7 +5143,7 @@ async def loop_ranking_xp():
     await _atualizar_ranking_xp()
 
 
-_VERXP_SOME_SEGUNDOS = 10   # a resposta do .verxp some sozinha depois desse tempo
+_VERXP_SOME_SEGUNDOS = 10   # a resposta do !verxp some sozinha depois desse tempo
 
 
 @bot.command(name="verxp")
@@ -5153,7 +5153,7 @@ async def cmd_verxp(ctx):
     quais boosters estão ativos (com o tempo que falta pra cada um) e há
     quanto tempo você tá nessa call sem sair/mutar/trocar de canal. Usa a
     mesma conta de verdade de _processar_xp_call. A resposta some sozinha
-    em alguns segundos. Uso: .verxp"""
+    em alguns segundos. Uso: !verxp"""
     autor = ctx.author
 
     guild = ctx.guild or (bot.guilds[0] if bot.guilds else None)
@@ -5236,7 +5236,7 @@ async def cmd_verxp(ctx):
 
 @bot.command(name="nivel")
 async def cmd_nivel(ctx, membro: discord.Member = None):
-    """Mostra o nível e XP de um membro (ou de quem usou o comando). Uso: .nivel [@membro]"""
+    """Mostra o nível e XP de um membro (ou de quem usou o comando). Uso: !nivel [@membro]"""
     if ctx.guild is None:
         return
 
@@ -5273,12 +5273,12 @@ async def cmd_nivel(ctx, membro: discord.Member = None):
 async def cmd_dar_level(ctx, membro: discord.Member = None, nivel: int = None):
     """Define manualmente o nível de alguém no ranking de XP (ajusta o XP
     dela pro início desse nível). Só o Reality pode usar.
-    Uso: .darlevel @membro <nível>"""
+    Uso: !darlevel @membro <nível>"""
     if ctx.author.id != CRIADOR_ID:
         return
 
     if membro is None or nivel is None:
-        await ctx.send("⚠️ Uso correto: `.darlevel @membro <nível>`\nExemplo: `.darlevel @Fulano 10`")
+        await ctx.send("⚠️ Uso correto: `!darlevel @membro <nível>`\nExemplo: `!darlevel @Fulano 10`")
         return
 
     if nivel < 0:
@@ -5312,19 +5312,19 @@ async def cmd_removerxp(ctx, modo: str = None, user_id: int = None, valor: int =
     10.000 e você tira 2.000, ela fica com 8.000 — sem nenhum arredondamento
     pro início de nível. O nível exibido é só recalculado depois, a partir do
     XP que sobrou (nunca fica negativo — mínimo é 0). Só o Reality pode usar.
-    Uso: .removerxp id <ID> <valor>
-    Exemplo: .removerxp id 769951556388257812 2000   → remove 2000 pontos de XP dessa pessoa
+    Uso: !removerxp id <ID> <valor>
+    Exemplo: !removerxp id 769951556388257812 2000   → remove 2000 pontos de XP dessa pessoa
 
-    ⚠️ NOTA: não pode se chamar ".baumimic" — esse nome já é usado pelo baú
-    disfarçado de Mimic (.baumimic) que já existe no bot, então ficaria
+    ⚠️ NOTA: não pode se chamar "!baumimic" — esse nome já é usado pelo baú
+    disfarçado de Mimic (!baumimic) que já existe no bot, então ficaria
     duplicado e o bot recusa iniciar (CommandRegistrationError)."""
     if ctx.author.id != CRIADOR_ID:
         return
 
     if modo != "id" or user_id is None or valor is None:
         await ctx.send(
-            "⚠️ Uso correto: `.removerxp id <ID> <valor>`\n"
-            "Exemplo: `.removerxp id 769951556388257812 2000` — remove 2000 pontos de XP dessa pessoa."
+            "⚠️ Uso correto: `!removerxp id <ID> <valor>`\n"
+            "Exemplo: `!removerxp id 769951556388257812 2000` — remove 2000 pontos de XP dessa pessoa."
         )
         return
 
@@ -5464,7 +5464,7 @@ class ReiniciarRankingView(discord.ui.View):
 @bot.command(name="reiniciarranking")
 async def cmd_reiniciar_ranking(ctx):
     """Reseta TODO o ranking de interação (xp, nível, criaturas, vitórias e
-    derrotas) de volta a 0. Só o Reality pode usar. Uso: .reiniciarranking"""
+    derrotas) de volta a 0. Só o Reality pode usar. Uso: !reiniciarranking"""
     if ctx.author.id != CRIADOR_ID:
         return
 
@@ -5483,7 +5483,7 @@ async def cmd_reiniciar_ranking(ctx):
 
 class ReiniciarGeralRPGView(discord.ui.View):
     """View de confirmação do reset GERAL do RPG — a versão "nuclear" do
-    .reiniciarranking: zera xp, nível, criaturas (inclusive Bestas),
+    !reiniciarranking: zera xp, nível, criaturas (inclusive Bestas),
     vitórias/derrotas e favorita de TODO MUNDO, e por cima disso também
     zera os boosters (Booster de Call e Booster de xp em dobro) e qualquer
     ovo incubando. Só o Reality (CRIADOR_ID) pode confirmar ou cancelar —
@@ -5566,10 +5566,10 @@ async def cmd_reiniciogeralrpg(ctx):
     """Reseta ABSOLUTAMENTE TUDO do RPG, de TODO MUNDO, de uma vez: xp, nível,
     criaturas desbloqueadas (inclusive Bestas), Níveis de Capacidade,
     favorita, vitórias e derrotas, Booster de Call, Booster de xp em dobro
-    (baú/boss) e ovos incubando (.ovo/.ovodragao). Diferente do
-    .reiniciarranking (que só zera xp/nível/criaturas), esse também zera os
+    (baú/boss) e ovos incubando (!ovo/!ovodragao). Diferente do
+    !reiniciarranking (que só zera xp/nível/criaturas), esse também zera os
     boosters e já salva o reset em disco na hora. Irreversível. Só o Reality
-    pode usar. Uso: .reiniciogeralrpg"""
+    pode usar. Uso: !reiniciogeralrpg"""
     if ctx.author.id != CRIADOR_ID:
         return
 
@@ -5586,7 +5586,7 @@ async def cmd_reiniciogeralrpg(ctx):
             "• Vitórias e derrotas\n"
             "• 🔥 Booster de Call (streak) de todo mundo\n"
             "• ⚡ Booster de xp em dobro (baú/boss) de todo mundo\n"
-            "• 🥚 Ovos incubando (`.ovo` e `.ovodragao`)\n\n"
+            "• 🥚 Ovos incubando (`!ovo` e `!ovodragao`)\n\n"
             "⚠️ **Isso é irreversível e vale pra TODO MUNDO, sem exceção.**\n\n"
             "Tem certeza?"
         ),
@@ -5603,7 +5603,7 @@ async def cmd_xp_backfill(ctx, limite: int = None):
     antes da liberação do cargo. Sem isso, só quem mandar uma mensagem NOVA
     depois da atualização apareceria no ranking; com isso, quem já participava
     antes aparece de uma vez, sem precisar mandar mensagem de novo.
-    Só o dono do bot pode usar. Uso: .xpbackfill [limite de msgs por canal]"""
+    Só o dono do bot pode usar. Uso: !xpbackfill [limite de msgs por canal]"""
     if ctx.author.id != CRIADOR_ID:
         return
 
@@ -5680,7 +5680,7 @@ _RARIDADES = {
     # 🌀 Elementais: mais fortes que as Lendárias, mas ainda um degrau abaixo
     # das Bestas — o resto das raridades acima delas (Bestas, Fósseis,
     # Secretas, Míticas) elas não chegam a bater de frente com tanta força.
-    # Não entram no sorteio normal de recompensa nem no 🪙 Baú/.ovo — a ÚNICA
+    # Não entram no sorteio normal de recompensa nem no 🪙 Baú/!ovo — a ÚNICA
     # forma de conseguir um é levando uma criatura 🟣 Épica até o Nível de
     # Capacidade 6 (ver _ELEMENTAL_NIVEL_DESBLOQUEIO e
     # _checar_desbloqueio_elemental, mais abaixo): ao bater esse nível, a
@@ -5817,7 +5817,7 @@ _BATALHA_CRIATURAS = [
 
     # ── Fósseis ─────────────────────────────────────────────────────────
     # Um degrau abaixo das Secretas, mas mais fortes que as Lendárias. Não
-    # entram no sorteio normal de recompensa nem no 🪙 Baú/.ovo — a ÚNICA
+    # entram no sorteio normal de recompensa nem no 🪙 Baú/!ovo — a ÚNICA
     # forma de conseguir uma é vencendo uma batalha de "eu te desafio" com
     # os DOIS lados (desafiante e desafiado) numa call de voz no momento:
     # aí sim rola uma chance de _FOSSIL_CHANCE_DESBLOQUEIO de o vencedor
@@ -5834,9 +5834,9 @@ _BATALHA_CRIATURAS = [
 
     # ── Secretas ────────────────────────────────────────────────────────
     # Um degrau abaixo das Míticas, mas acima das Lendárias — e MUITO mais
-    # raras de conseguir que qualquer uma delas. Só saem do 🪙 Baú (.bau),
+    # raras de conseguir que qualquer uma delas. Só saem do 🪙 Baú (!bau),
     # com uma chance minúscula (_BAU_CHANCE_SECRETO) — nunca aparecem como
-    # recompensa normal de vitória em batalha nem no .ovo.
+    # recompensa normal de vitória em batalha nem no !ovo.
     {"id": "nyxalith_dragao_eclipse_contaminado", "nome": "Nyxalith, o Dragão do Eclipse Contaminado", "raridade": "secreto", "gif": "https://cdn.discordapp.com/attachments/926913851172204577/1530548540453949492/PixVerse_V6_Image_Text_540P_faa_em_pixel_arte8-ezgif.com-video-to-gif-converter.gif?ex=6a65f9e8&is=6a64a868&hm=520ea2ec3119628ee31e2fcdc0ffec3cd2f58abeb1299853fe6bfbfa0225dc24"},
     {"id": "magnus_frostbane",                    "nome": "Magnus Frostbane",                             "raridade": "secreto", "gif": "https://cdn.discordapp.com/attachments/926913851172204577/1530551857657811144/PixVerse_V6_Image_Text_540P_faa_em_pixel_arte12-ezgif.com-video-to-gif-converter.gif?ex=6a65fcff&is=6a64ab7f&hm=b17f232f526747a90194d31ac0043cb30c66511a1df23b2ea54c79d98c633e19"},
     {"id": "drakonis_prime",                      "nome": "Drakonis Prime",                               "raridade": "secreto", "gif": "https://cdn.discordapp.com/attachments/926913851172204577/1530550661341646929/PixVerse_V6_Image_Text_540P_faa_em_pixel_arte10-ezgif.com-video-to-gif-converter.gif?ex=6a65fbe1&is=6a64aa61&hm=56b3b0869302c0a49246ec7ba92b17ab28db532828585b57d68ceee9eec47c4d"},
@@ -5938,12 +5938,12 @@ def _sortear_golpe_especial() -> dict | None:
 # chocando etc.) é anunciado com o motivo.
 #
 # ⚠️ De propósito, NUNCA passa por aqui nada que venha de comando
-# administrativo do Reality/CRIADOR_ID — .darcriatura, .uparcriatura,
-# .vantagem (a concessão em si), .darbosster, .bostercall, .darlevel,
-# .ovo (a concessão em si), .reiniciarcriaturas, .reiniciarranking,
-# .xpbackfill, .destravarbesta/corrigirbesta/checarbesta,
-# .destravarpet/corrigirpet/checarpet, .rankingdebug,
-# .xpdebug, .castigo — esses são ajustes manuais internos, não "ganhos" do
+# administrativo do Reality/CRIADOR_ID — !darcriatura, !uparcriatura,
+# !vantagem (a concessão em si), !darbosster, !bostercall, !darlevel,
+# !ovo (a concessão em si), !reiniciarcriaturas, !reiniciarranking,
+# !xpbackfill, !destravarbesta/corrigirbesta/checarbesta,
+# !destravarpet/corrigirpet/checarpet, .rankingdebug,
+# !xpdebug, .castigo — esses são ajustes manuais internos, não "ganhos" do
 # jogo, e não devem aparecer no log. Batalhas onde uma Vantagem foi usada
 # nos bastidores CONTINUAM sendo logadas normalmente (como uma vitória
 # comum) — é assim que o resto do bot já trata isso, pra manter a
@@ -6271,7 +6271,7 @@ def _forcar_verificacao_besta(user_id: int, criatura: dict):
     """Versão 'preguiçosa' de _checar_desbloqueio_besta: em vez de exigir que
     o Nível de Capacidade tenha acabado de subir NESSA hora, só olha o
     estado atual — se `criatura` já está no nível máximo dela pra essa
-    pessoa. Usada pelo comando `.destravarbesta`, que existe pra corrigir
+    pessoa. Usada pelo comando `!destravarbesta`, que existe pra corrigir
     manualmente os casos em que o desbloqueio automático (em batalha) falhou
     ou não foi anunciado. Sortear e conceder a Besta segue seguro contra
     duplicação: só concede se ainda faltar alguma Besta daquele tier na
@@ -6302,7 +6302,7 @@ def _forcar_verificacao_besta(user_id: int, criatura: dict):
 # Elemental ALEATÓRIO dentre os que ainda não tiver (diferente das Bestas,
 # não existe "tier" — todos os 12 Elementais entram no mesmo sorteio).
 # Nunca aparecem no sorteio normal de recompensa de batalha nem no 🪙 Baú/
-# `.ovo` — só saem por esse caminho.
+# `!ovo` — só saem por esse caminho.
 #
 # Além do desbloqueio, todo Elemental USADO numa batalha de desafio
 # ("eu te desafio @alguém") — convocado, ganhando ou perdendo, não importa
@@ -6416,7 +6416,7 @@ async def _anunciar_elemental_desbloqueado(
 # e exclusivo das criaturas Raras.
 #
 # Pets NÃO entram em batalha PvP (não são "criaturas") — são só SUPORTE
-# pro Boss: quando EQUIPADO (`.equiparpet <nome>`), o Pet soma um bônus
+# pro Boss: quando EQUIPADO (`!equiparpet <nome>`), o Pet soma um bônus
 # fixo na chance de vencer QUALQUER Boss (entre 2% e 5%, crescendo com o
 # Nível do próprio Pet) e tem uma chance de upar +1 o Nível de Capacidade
 # de uma das suas criaturas toda vez que participa de uma VITÓRIA contra
@@ -6634,7 +6634,7 @@ async def _anunciar_pet_desbloqueado(
             f"✨ **{membro.display_name}** levou **{criatura_origem['nome']}** até o "
             f"**Nível de Capacidade `{_PET_NIVEL_DESBLOQUEIO}`** e, de recompensa, destravou "
             f"o Pet **{pet['nome']}**!!\n\n"
-            f"Use `.equiparpet {pet['nome']}` pra equipar — Pets dão bônus na chance de vencer "
+            f"Use `!equiparpet {pet['nome']}` pra equipar — Pets dão bônus na chance de vencer "
             "Boss e ajudam a upar suas criaturas!\n\n"
             f"👽 **Renan:** ...um novo companheiro. Eu aceito a companhia dele. {membro.mention} "
             "ganhou um Pet novo."
@@ -6657,7 +6657,7 @@ def _forcar_verificacao_pet(user_id: int, criatura: dict):
     o Nível de Capacidade tenha acabado de subir NESSA hora, só olha o
     estado atual — se `criatura` (🔵 Rara) já está no Nível de Capacidade
     `_PET_NIVEL_DESBLOQUEIO` ou acima, pra essa pessoa. Usada pelo comando
-    `.destravarpet`, que existe pra corrigir manualmente os casos em que o
+    `!destravarpet`, que existe pra corrigir manualmente os casos em que o
     desbloqueio automático (em batalha) falhou ou não foi anunciado.
     Sortear e conceder o Pet segue seguro contra duplicação: só concede se
     ainda faltar algum Pet na coleção da pessoa (mesma checagem de sempre)."""
@@ -6714,7 +6714,7 @@ def _pet_upar_criatura_aleatoria(user_id: int):
     """Escolhe, entre as criaturas já desbloqueadas dessa pessoa que AINDA
     não estão no Nível de Capacidade máximo, uma aleatória, e empurra os
     usos dela pro limiar mínimo do próximo Nível (mesma lógica do
-    `.uparcriatura`). Devolve (criatura, nivel_novo, besta_nova, pet_novo)
+    `!uparcriatura`). Devolve (criatura, nivel_novo, besta_nova, pet_novo)
     — besta_nova/pet_novo vêm preenchidos se esse "up" de brinde acabou de
     destravar uma Besta ou um Pet novo (cascata) — ou None se não tinha
     nenhuma criatura elegível pra upar."""
@@ -6827,7 +6827,7 @@ async def _pet_pos_boss_grupo(guild: discord.Guild, participantes: list, venceu:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# .destravarbesta — comando de manutenção/correção. Verifica se a pessoa
+# !destravarbesta — comando de manutenção/correção. Verifica se a pessoa
 # (ou alguém que o Reality aponte) tem alguma criatura ⚪/🔵/🟣 já no Nível
 # de Capacidade máximo cuja Besta correspondente não foi concedida (por
 # causa de alguma falha no desbloqueio automático em batalha) e concede na
@@ -6839,8 +6839,8 @@ async def _pet_pos_boss_grupo(guild: discord.Guild, participantes: list, venceu:
 @bot.command(name="destravarbesta", aliases=["corrigirbesta", "checarbesta"])
 async def cmd_destravarbesta(ctx, membro: discord.Member = None):
     """Corrige o bug de Besta não concedida/anunciada.
-    Uso: .destravarbesta            → verifica você mesmo
-         .destravarbesta @membro    → só o Reality pode checar outra pessoa
+    Uso: !destravarbesta            → verifica você mesmo
+         !destravarbesta @membro    → só o Reality pode checar outra pessoa
     """
     autor = ctx.author
 
@@ -6890,12 +6890,12 @@ async def cmd_destravarbesta(ctx, membro: discord.Member = None):
 
     nomes = ", ".join(f"🐺 **{besta['nome']}**" for _, besta in concedidas)
     await ctx.send(
-        f"✅ Corrigido! {alvo.mention} destravou: {nomes} — confira o canal de anúncios e `.criaturas`. ⚡"
+        f"✅ Corrigido! {alvo.mention} destravou: {nomes} — confira o canal de anúncios e `!criaturas`. ⚡"
     )
 
 
 # ══════════════════════════════════════════════════════════════════════
-# .destravarpet — comando de manutenção/correção. Verifica se a pessoa
+# !destravarpet — comando de manutenção/correção. Verifica se a pessoa
 # (ou alguém que o Reality aponte) tem alguma criatura 🔵 Rara já no Nível
 # de Capacidade `_PET_NIVEL_DESBLOQUEIO` (4) ou mais cujo Pet correspondente
 # não foi concedido (por causa de alguma falha no desbloqueio automático em
@@ -6907,8 +6907,8 @@ async def cmd_destravarbesta(ctx, membro: discord.Member = None):
 @bot.command(name="destravarpet", aliases=["corrigirpet", "checarpet"])
 async def cmd_destravarpet(ctx, membro: discord.Member = None):
     """Corrige o bug de Pet não concedido/anunciado.
-    Uso: .destravarpet            → verifica você mesmo
-         .destravarpet @membro    → só o Reality pode checar outra pessoa
+    Uso: !destravarpet            → verifica você mesmo
+         !destravarpet @membro    → só o Reality pode checar outra pessoa
     """
     autor = ctx.author
 
@@ -6959,12 +6959,12 @@ async def cmd_destravarpet(ctx, membro: discord.Member = None):
 
     nomes = ", ".join(f"🐾 **{pet['nome']}**" for _, pet in concedidos)
     await ctx.send(
-        f"✅ Corrigido! {alvo.mention} destravou: {nomes} — confira o canal de anúncios e `.equiparpet`. ⚡"
+        f"✅ Corrigido! {alvo.mention} destravou: {nomes} — confira o canal de anúncios e `!equiparpet`. ⚡"
     )
 
 
 # ══════════════════════════════════════════════════════════════════════
-# .reiniciacriaturas — comando de manutenção. Zera a COLEÇÃO de criaturas
+# !reiniciacriaturas — comando de manutenção. Zera a COLEÇÃO de criaturas
 # de UMA pessoa específica (por ID): as criaturas/Bestas desbloqueadas, o
 # Nível de Capacidade de cada uma e a criatura favorita ativa. NÃO mexe em
 # XP, nível geral nem vitórias/derrotas — só no lado "criaturas" mesmo.
@@ -7026,12 +7026,12 @@ async def cmd_reiniciacriaturas(ctx, alvo_id: int = None):
     """Reseta a coleção de criaturas (desbloqueadas, Níveis de Capacidade e
     favorita) de UMA pessoa específica, por ID. Não mexe em XP/nível geral
     nem vitórias/derrotas. Só o Reality pode usar.
-    Uso: .reiniciacriaturas <ID do membro>"""
+    Uso: !reiniciacriaturas <ID do membro>"""
     if ctx.author.id != CRIADOR_ID:
         return
 
     if alvo_id is None:
-        aviso = await ctx.send("⚠️ Uso: `.reiniciacriaturas <ID do membro>`")
+        aviso = await ctx.send("⚠️ Uso: `!reiniciacriaturas <ID do membro>`")
         await _apagar_mensagem_depois(aviso, 15)
         return
 
@@ -7064,7 +7064,7 @@ async def cmd_reiniciacriaturas(ctx, alvo_id: int = None):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# CRIATURA FAVORITA — comando `.favorito <nome>`. Enquanto alguém tiver uma
+# CRIATURA FAVORITA — comando `!favorito <nome>`. Enquanto alguém tiver uma
 # favorita ativa, ela é SEMPRE a escolhida nas batalhas dessa pessoa (em vez
 # do sorteio aleatório de sempre) — até "cansar" depois de um certo número
 # de usos seguidos. Aí ela some da jogada, as batalhas voltam a sortear
@@ -7190,7 +7190,7 @@ _FOSSIL_CHANCE_DESBLOQUEIO = 0.02     # 2% de chance nessa rolagem (só quando o
 _BATALHA_TEMPO_ACEITE = 60          # segundos que o desafiado tem pra aceitar/recusar
 _BATALHA_TEMPO_SOMEM  = 60          # segundos até cada mensagem da batalha sumir sozinha
 
-# ── Vantagem — comando .vantagem <ID>, só o Reality. Marca alguém pra
+# ── Vantagem — comando !vantagem <ID>, só o Reality. Marca alguém pra
 # GANHAR garantido a PRÓXIMA batalha que participar (como desafiante ou
 # desafiado, tanto faz) e saquear entre _VANTAGEM_ROUBO_MIN e
 # _VANTAGEM_ROUBO_MAX (20% a 30%) de XP garantido da outra pessoa — o
@@ -7204,13 +7204,13 @@ _VANTAGEM_ROUBO_TETO = 700        # teto máximo de XP roubado com a Vantagem �
                                     # mesmo sendo um roubo garantido, pra não ficar desigual
                                     # entre rank baixo e alto.
 
-# ── Vantagem (call) — comando .vantagemfossio <ID>, só o Reality. Parecida
-# com .vantagem (vitória garantida), mas com 3 diferenças:
+# ── Vantagem (call) — comando !vantagemfossio <ID>, só o Reality. Parecida
+# com !vantagem (vitória garantida), mas com 3 diferenças:
 #   1. Só "destrava" numa batalha em que desafiante e desafiado estejam os
 #      dois na MESMA call no momento do combate. Se a próxima batalha dela
 #      acontecer sem os dois em call juntos, a Vantagem NÃO é consumida —
 #      fica pendente, esperando uma batalha em que a condição bata.
-#   2. O roubo de XP usa uma faixa própria, mais baixa que a do .vantagem
+#   2. O roubo de XP usa uma faixa própria, mais baixa que a do !vantagem
 #      normal: _VANTAGEM_FOSSIO_ROUBO_MIN a _MAX (10% a 20%, também sem
 #      chance de sair 0%).
 #   3. Como a condição já garante os dois em call, o desenterro de 🦴 Fóssil
@@ -7220,7 +7220,7 @@ _VANTAGEM_ROUBO_TETO = 700        # teto máximo de XP roubado com a Vantagem �
 _vantagem_fossio_ativa: set = set()   # user_ids com Vantagem (call) pendente
 _VANTAGEM_FOSSIO_ROUBO_MIN = 0.10     # 10% — mínimo de xp roubado garantido com a Vantagem (call)
 _VANTAGEM_FOSSIO_ROUBO_MAX = 0.20     # 20% — máximo de xp roubado garantido com a Vantagem (call)
-_VANTAGEM_FOSSIO_ROUBO_TETO = 700     # teto máximo de XP roubado com a Vantagem (call) — mesmo teto do .vantagem normal
+_VANTAGEM_FOSSIO_ROUBO_TETO = 700     # teto máximo de XP roubado com a Vantagem (call) — mesmo teto do !vantagem normal
 
 
 def _mesma_call(a: discord.Member, b: discord.Member) -> bool:
@@ -7406,7 +7406,7 @@ async def _executar_batalha(
     # (convocado, ganhando ou perdendo, não importa) já concede na hora,
     # pra quem o convocou, um Booster de xp em dobro por
     # _ELEMENTAL_BOOSTER_MINUTOS minutos — empilha em cima de qualquer
-    # booster que a pessoa já tiver ativo (mesma função do 🪙 Baú/.darbosster).
+    # booster que a pessoa já tiver ativo (mesma função do 🪙 Baú/!darbosster).
     boost_elemental_desafiante = criatura_desafiante["raridade"] == "elemental"
     boost_elemental_desafiado = criatura_desafiado["raridade"] == "elemental"
     if boost_elemental_desafiante:
@@ -7472,12 +7472,12 @@ async def _executar_batalha(
     # raridade E de nível, mais a balança pende pro lado mais forte — mas o
     # lado mais fraco sempre mantém uma chance real de dar a zebra.
     #
-    # 🍀 EXCEÇÃO: se um dos dois tiver uma Vantagem pendente (.vantagem), ela
+    # 🍀 EXCEÇÃO: se um dos dois tiver uma Vantagem pendente (!vantagem), ela
     # é consumida aqui e o resultado NEM passa pelo sorteio — essa pessoa
     # vence garantido essa batalha (a próxima que ela participar depois de
     # receber a Vantagem).
     vantagem_usada_por = None
-    via_vantagem_fossio = False   # True quando quem venceu foi por causa do .vantagemfossio (não do .vantagem normal)
+    via_vantagem_fossio = False   # True quando quem venceu foi por causa do !vantagemfossio (não do !vantagem normal)
     if desafiante.id in _vantagem_ativa:
         _vantagem_ativa.discard(desafiante.id)
         vantagem_usada_por = desafiante.id
@@ -7547,7 +7547,7 @@ async def _executar_batalha(
     # pra sua coleção. Quem perde não ganha nada disso.
     # 🐉 Míticas ficam de fora desse sorteio normal — elas têm uma checagem
     # especial própria logo abaixo, bem mais rara. 🌌 Secretas também ficam
-    # de fora — essas só saem do 🪙 Baú (.bau), nunca como recompensa de
+    # de fora — essas só saem do 🪙 Baú (!bau), nunca como recompensa de
     # batalha. 🦴 Fósseis também ficam de fora — só saem com os dois lados em
     # call, ver checagem própria logo abaixo. 🐺 Bestas também ficam de fora —
     # essas só saem quando uma criatura Comum/Rara/Épica bate o Nível de
@@ -7594,7 +7594,7 @@ async def _executar_batalha(
         and desafiado.voice is not None and desafiado.voice.channel is not None
     )
     if _ambos_em_call and (via_vantagem_fossio or random.random() < _FOSSIL_CHANCE_DESBLOQUEIO):
-        # 📞 Se veio do .vantagemfossio, pula o sorteio de _FOSSIL_CHANCE_DESBLOQUEIO
+        # 📞 Se veio do !vantagemfossio, pula o sorteio de _FOSSIL_CHANCE_DESBLOQUEIO
         # (2%) e já cai direto aqui garantido — só depende de sobrar algum
         # Fóssil que quem venceu ainda não tenha.
         _fosseis_faltando = [
@@ -7692,7 +7692,7 @@ async def _executar_batalha(
         if via_vantagem_fossio:
             # 📞 Vantagem (call) usada — rouba entre 10% e 20% garantido
             # (sem chance de 0%), faixa própria e mais baixa que a do
-            # .vantagem normal.
+            # !vantagem normal.
             percentual = random.uniform(_VANTAGEM_FOSSIO_ROUBO_MIN, _VANTAGEM_FOSSIO_ROUBO_MAX)
             teto_roubo = _VANTAGEM_FOSSIO_ROUBO_TETO
         else:
@@ -7766,7 +7766,7 @@ async def _executar_batalha(
         partes_desbloqueio.append(
             f"🆕 De recompensa, **{vencedor.display_name}** desbloqueou "
             f"{info_raridade_nova['emoji']} **{criatura_nova['nome']}** "
-            f"(*{info_raridade_nova['label']}*) na Enciclopédia! Use `.criaturas` pra conferir. 📖"
+            f"(*{info_raridade_nova['label']}*) na Enciclopédia! Use `!criaturas` pra conferir. 📖"
         )
     if criatura_mitica_nova is not None:
         info_raridade_mitica = _RARIDADES[criatura_mitica_nova["raridade"]]
@@ -8031,7 +8031,7 @@ async def _processar_desafio(message: discord.Message) -> None:
 # ══════════════════════════════════════════════════════════════════════
 
 
-CANAL_CRIATURAS_ID = 1536880856743022682  # canal onde a coleção do .criaturas é SEMPRE enviada
+CANAL_CRIATURAS_ID = 1536880856743022682  # canal onde a coleção do !criaturas é SEMPRE enviada
 
 
 @bot.command(name="criaturas")
@@ -8040,7 +8040,7 @@ async def cmd_criaturas(ctx, membro: discord.Member = None):
     Batalhas (ou de quem usou o comando, se ninguém for mencionado).
     A resposta é sempre jogada no canal CANAL_CRIATURAS_ID, não importa
     de onde o comando foi chamado.
-    Uso: .criaturas [@alguém]"""
+    Uso: !criaturas [@alguém]"""
     alvo = membro or ctx.author
     desbloqueadas = set(_garantir_criaturas_iniciais(alvo.id))
     favorito_alvo = _favorito_status(alvo.id)
@@ -8060,10 +8060,10 @@ async def cmd_criaturas(ctx, membro: discord.Member = None):
             partes_descanso.append(f"**{nome_cansada}** (`{_formatar_tempo_restante(ate - time.time())}`)")
         linha_favorito = (
             "😮‍💨 Descansando: " + ", ".join(partes_descanso) +
-            " — mas dá pra favoritar outra criatura a qualquer momento com `.favorito <nome>`."
+            " — mas dá pra favoritar outra criatura a qualquer momento com `!favorito <nome>`."
         )
     else:
-        linha_favorito = "🌟 *Sem favorita ativa no momento — use `.favorito <nome>` pra escolher uma.*"
+        linha_favorito = "🌟 *Sem favorita ativa no momento — use `!favorito <nome>` pra escolher uma.*"
 
     embed = discord.Embed(
         title=f"📖 Coleção de Criaturas — {alvo.display_name}",
@@ -8107,7 +8107,7 @@ async def cmd_criaturas(ctx, membro: discord.Member = None):
         value=(
             "\n".join(linhas_pets) + "\n\n"
             "*Desbloqueados ao levar uma criatura 🔵 Rara até o Nível de Capacidade "
-            f"`{_PET_NIVEL_DESBLOQUEIO}`. Equipe um com `.equiparpet <nome>` — eles dão bônus na "
+            f"`{_PET_NIVEL_DESBLOQUEIO}`. Equipe um com `!equiparpet <nome>` — eles dão bônus na "
             "chance de vencer Boss e ajudam a upar suas criaturas!*"
         ),
         inline=False,
@@ -8142,7 +8142,7 @@ async def cmd_criaturas(ctx, membro: discord.Member = None):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# COMANDO .favorito — escolhe uma criatura favorita pras batalhas. Enquanto
+# COMANDO !favorito — escolhe uma criatura favorita pras batalhas. Enquanto
 # ela estiver ativa, é SEMPRE ela quem entra em campo (sem sorteio) — até
 # cansar depois de _FAVORITO_USOS_ATE_CANSAR usos seguidos, quando então
 # some por _FAVORITO_COOLDOWN_SEGUNDOS antes de poder ser favoritada de novo.
@@ -8155,9 +8155,9 @@ _FAVORITO_PALAVRAS_REMOVER = {"remover", "limpar", "cancelar", "nenhum", "nenhum
 async def cmd_favorito(ctx, *, nome: str = None):
     """Define (ou consulta) sua criatura favorita pra batalhas.
     Uso:
-      .favorito <nome da criatura>  → define a favorita (ela passa a entrar em TODA batalha sua)
-      .favorito                     → mostra o status atual (favorita ativa ou tempo de cansaço restante)
-      .favorito remover             → tira a favorita atual, sem precisar esperar ela cansar
+      !favorito <nome da criatura>  → define a favorita (ela passa a entrar em TODA batalha sua)
+      !favorito                     → mostra o status atual (favorita ativa ou tempo de cansaço restante)
+      !favorito remover             → tira a favorita atual, sem precisar esperar ela cansar
     """
     autor = ctx.author
     favorito = _favorito_status(autor.id)
@@ -8181,12 +8181,12 @@ async def cmd_favorito(ctx, *, nome: str = None):
             await ctx.send(
                 "👽 **Renan:** ...você não tem favorita ativa agora. Descansando: "
                 + ", ".join(partes) +
-                ". Pode favoritar outra criatura a qualquer momento com `.favorito <nome>`."
+                ". Pode favoritar outra criatura a qualquer momento com `!favorito <nome>`."
             )
         else:
             await ctx.send(
                 "👽 **Renan:** ...você não tem nenhuma favorita agora — suas batalhas estão "
-                "sorteando aleatoriamente. Use `.favorito <nome da criatura>` pra escolher uma."
+                "sorteando aleatoriamente. Use `!favorito <nome da criatura>` pra escolher uma."
             )
         return
 
@@ -8207,7 +8207,7 @@ async def cmd_favorito(ctx, *, nome: str = None):
     criatura = _encontrar_criatura_por_nome(nome)
     if criatura is None:
         await ctx.send(
-            f"⚠️ Não encontrei nenhuma criatura chamada `{nome}`. Confira o nome certinho com `.criaturas`."
+            f"⚠️ Não encontrei nenhuma criatura chamada `{nome}`. Confira o nome certinho com `!criaturas`."
         )
         return
 
@@ -8215,7 +8215,7 @@ async def cmd_favorito(ctx, *, nome: str = None):
     if criatura["id"] not in desbloqueadas:
         await ctx.send(
             f"👽 **Renan:** ...você ainda não desbloqueou **{criatura['nome']}**. "
-            "Só dá pra favoritar quem já tá na sua coleção — confira com `.criaturas`."
+            "Só dá pra favoritar quem já tá na sua coleção — confira com `!criaturas`."
         )
         return
 
@@ -8226,7 +8226,7 @@ async def cmd_favorito(ctx, *, nome: str = None):
         restante = _formatar_tempo_restante(cansaco_ate - time.time())
         await ctx.send(
             f"👽 **Renan:** ...**{criatura['nome']}** ainda está descansando. Espere mais "
-            f"`{restante}` antes de favoritá-la de novo — ou escolha outra com `.favorito <nome>`."
+            f"`{restante}` antes de favoritá-la de novo — ou escolha outra com `!favorito <nome>`."
         )
         return
 
@@ -8244,7 +8244,7 @@ async def cmd_favorito(ctx, *, nome: str = None):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# COMANDO .equiparpet — escolhe qual Pet fica ATIVO (equipado) pra dar
+# COMANDO !equiparpet — escolhe qual Pet fica ATIVO (equipado) pra dar
 # suporte nas batalhas contra Boss. Só um Pet por vez; trocar de Pet NÃO
 # zera o progresso de Nível dele (fica salvo por Pet, igual o Nível de
 # Capacidade das criaturas) — só o Pet equipado no momento é quem soma o
@@ -8258,9 +8258,9 @@ _PET_PALAVRAS_REMOVER = {"remover", "limpar", "cancelar", "nenhum", "nenhuma", "
 async def cmd_equiparpet(ctx, *, nome: str = None):
     """Equipa (ou consulta) seu Pet ativo pras batalhas contra Boss.
     Uso:
-      .equiparpet <nome do pet>  → equipa esse Pet (precisa já tê-lo desbloqueado)
-      .equiparpet                → mostra o Pet equipado agora (ou sua lista de Pets, se nenhum)
-      .equiparpet remover        → desequipa, sem trocar por outro
+      !equiparpet <nome do pet>  → equipa esse Pet (precisa já tê-lo desbloqueado)
+      !equiparpet                → mostra o Pet equipado agora (ou sua lista de Pets, se nenhum)
+      !equiparpet remover        → desequipa, sem trocar por outro
     """
     autor = ctx.author
     pets_possuidos = _pets_desbloqueados(autor.id)
@@ -8287,7 +8287,7 @@ async def cmd_equiparpet(ctx, *, nome: str = None):
             )
             await ctx.send(
                 f"👽 **Renan:** ...você tem Pets, mas nenhum equipado agora. Seus Pets: {nomes}. "
-                "Use `.equiparpet <nome>` pra escolher um."
+                "Use `!equiparpet <nome>` pra escolher um."
             )
         else:
             await ctx.send(
@@ -8332,13 +8332,13 @@ async def cmd_equiparpet(ctx, *, nome: str = None):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# .darcriatura — comando interno, só o Reality (CRIADOR_ID) pode usar.
+# !darcriatura — comando interno, só o Reality (CRIADOR_ID) pode usar.
 # Concede uma criatura específica (por nome) direto pra coleção de alguém,
 # sem precisar passar por batalha nem sorteio. Útil pra corrigir coleção,
 # testar raridades específicas ou repor algo perdido.
 # De propósito NÃO aparece em nenhum lugar do help/ajuda.
-# Uso (PV ou servidor): .darcriatura <nome da criatura> <ID do membro>
-# Exemplo: .darcriatura Kraken do Abismo 769951556388257812
+# Uso (PV ou servidor): !darcriatura <nome da criatura> <ID do membro>
+# Exemplo: !darcriatura Kraken do Abismo 769951556388257812
 # ══════════════════════════════════════════════════════════════════════
 
 @bot.command(name="darcriatura")
@@ -8347,7 +8347,7 @@ async def cmd_darcriatura(ctx, *, texto: str = None):
         return
 
     if texto is None:
-        aviso = await ctx.send("⚠️ Uso: `.darcriatura <nome da criatura> <ID do membro>`")
+        aviso = await ctx.send("⚠️ Uso: `!darcriatura <nome da criatura> <ID do membro>`")
         await _apagar_mensagem_depois(aviso, 15)
         return
 
@@ -8356,9 +8356,9 @@ async def cmd_darcriatura(ctx, *, texto: str = None):
     partes = texto.rsplit(" ", 1)
     if len(partes) != 2 or not partes[1].isdigit():
         aviso = await ctx.send(
-            "⚠️ Uso: `.darcriatura <nome da criatura> <ID do membro>`\n"
+            "⚠️ Uso: `!darcriatura <nome da criatura> <ID do membro>`\n"
             "O ID precisa vir por último, separado por espaço. "
-            "Exemplo: `.darcriatura Kraken do Abismo 769951556388257812`"
+            "Exemplo: `!darcriatura Kraken do Abismo 769951556388257812`"
         )
         await _apagar_mensagem_depois(aviso, 15)
         return
@@ -8406,13 +8406,13 @@ async def cmd_darcriatura(ctx, *, texto: str = None):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# .uparcriatura — comando interno, só o Reality (CRIADOR_ID) pode usar.
+# !uparcriatura — comando interno, só o Reality (CRIADOR_ID) pode usar.
 # Sobe em 1 o Nível de Capacidade da criatura favorita/equipada de alguém
 # (a mesma lógica de _calcular_nivel_criatura / _NIVEL_CRIATURA_USOS_ACUMULADOS
 # usada pelo resto do sistema — só que "empurrando" os usos direto pro
 # limiar do próximo nível, em vez de esperar batalhas de verdade).
 # De propósito NÃO aparece em nenhum lugar do help/ajuda.
-# Uso (PV ou servidor): .uparcriatura <ID ou @membro>
+# Uso (PV ou servidor): !uparcriatura <ID ou @membro>
 # ══════════════════════════════════════════════════════════════════════
 
 @bot.command(name="uparcriatura")
@@ -8423,7 +8423,7 @@ async def cmd_uparcriatura(ctx, alvo_id: int = None):
     if alvo_id is None and ctx.message.mentions:
         alvo_id = ctx.message.mentions[0].id
     if alvo_id is None:
-        aviso = await ctx.send("⚠️ Uso: `.uparcriatura <ID ou @membro>`")
+        aviso = await ctx.send("⚠️ Uso: `!uparcriatura <ID ou @membro>`")
         await _apagar_mensagem_depois(aviso, 15)
         return
 
@@ -8462,14 +8462,14 @@ async def cmd_uparcriatura(ctx, alvo_id: int = None):
 
 # ══════════════════════════════════════════════════════════════════════
 # BAÚ — evento de recompensa surpresa
-# Comando .bau (só o Reality/CRIADOR_ID pode ativar) joga um baú com botão
+# Comando !bau (só o Reality/CRIADOR_ID pode ativar) joga um baú com botão
 # no canal _BAU_CANAL_ID. A PRIMEIRA pessoa que clicar leva o prêmio: na
 # maioria das vezes um % de XP a mais (sorteado entre 1% e 20% do XP atual
 # dela); mais raro um booster de 5 minutos que DOBRA o xp ganho em call e
 # em mensagem nesse período; e, RARÍSSIMO (o prêmio mais difícil de todos),
 # uma criatura de raridade 🌌 Secreta — a única forma de conseguir uma.
 #
-# .baumimic joga um baú visualmente IDÊNTICO, mas que é, na verdade, um
+# !baumimic joga um baú visualmente IDÊNTICO, mas que é, na verdade, um
 # Mimic disfarçado: quem clicar primeiro cai numa armadilha e PERDE entre
 # _BAU_MIMIC_XP_MIN e _BAU_MIMIC_XP_MAX do XP dela, em vez de ganhar algo.
 # ══════════════════════════════════════════════════════════════════════
@@ -8496,7 +8496,7 @@ _xp_booster_ate: dict = {}    # user_id -> time.time() de quando o booster de xp
 
 
 def _carregar_xp_booster_stats() -> None:
-    """Carrega os boosters de xp em dobro (baú/boss/.darbosster) salvos em
+    """Carrega os boosters de xp em dobro (baú/boss/!darbosster) salvos em
     disco, se existirem. Roda antes do bot conectar — é isso que permite um
     booster ainda ativo sobreviver a um reinício do bot, em vez de sumir na
     hora. Boosters que já expiraram durante o tempo em que o bot ficou fora
@@ -8541,24 +8541,24 @@ def _conceder_xp_booster(user_id: int, minutos: float) -> None:
     """Concede (ou ESTENDE) o Booster de xp em dobro de alguém. Se a pessoa já
     tiver um ativo, soma `minutos` em cima do tempo que ainda resta, em vez de
     resetar pro valor cheio — assim dá pra empilhar vários boosters seguidos
-    (baú, boss, .darbosster...) sem perder o que já tava rolando."""
+    (baú, boss, !darbosster...) sem perder o que já tava rolando."""
     agora = time.time()
     inicio = max(agora, _xp_booster_ate.get(user_id, 0))
     _xp_booster_ate[user_id] = inicio + minutos * 60
     asyncio.create_task(_salvar_xp_booster_stats())
 
 
-# Carrega os boosters de xp em dobro salvos em disco (baú/boss/.darbosster) —
+# Carrega os boosters de xp em dobro salvos em disco (baú/boss/!darbosster) —
 # só é possível chamar aqui porque a função já foi definida acima.
 _carregar_xp_booster_stats()
 
 
 # ══════════════════════════════════════════════════════════════════════
-# .darbosster — comando interno, só o Reality (CRIADOR_ID) pode usar.
+# !darbosster — comando interno, só o Reality (CRIADOR_ID) pode usar.
 # Dá o Booster de xp (o mesmo prêmio raro do Baú: xp de call E de mensagem
 # em dobro por _BAU_BOOSTER_MINUTOS minutos) direto pra alguém, sem precisar
 # esperar o baú sortear. De propósito NÃO aparece em nenhum lugar do help.
-# Uso (PV ou servidor): .darbosster <ID ou @membro>
+# Uso (PV ou servidor): !darbosster <ID ou @membro>
 # ══════════════════════════════════════════════════════════════════════
 
 @bot.command(name="darbosster")
@@ -8569,7 +8569,7 @@ async def cmd_darbosster(ctx, alvo_id: int = None):
     if alvo_id is None and ctx.message.mentions:
         alvo_id = ctx.message.mentions[0].id
     if alvo_id is None:
-        aviso = await ctx.send("⚠️ Uso: `.darbosster <ID ou @membro>`")
+        aviso = await ctx.send("⚠️ Uso: `!darbosster <ID ou @membro>`")
         await _apagar_mensagem_depois(aviso, 15)
         return
 
@@ -8585,12 +8585,12 @@ async def cmd_darbosster(ctx, alvo_id: int = None):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# .bostercall — comando interno, só o Reality (CRIADOR_ID) pode usar.
-# Igual o .darbosster, mas em massa: dá o Booster de xp (o mesmo prêmio raro
+# !bostercall — comando interno, só o Reality (CRIADOR_ID) pode usar.
+# Igual o !darbosster, mas em massa: dá o Booster de xp (o mesmo prêmio raro
 # do Baú, x2 em call E mensagem por _BAU_BOOSTER_MINUTOS minutos) + 1 nível
 # de Booster de Call pra TODO MUNDO que estiver, agora, dentro do canal de
 # voz indicado. De propósito NÃO aparece em nenhum lugar do help.
-# Uso (PV ou servidor): .bostercall <ID do canal de voz>
+# Uso (PV ou servidor): !bostercall <ID do canal de voz>
 # ══════════════════════════════════════════════════════════════════════
 
 @bot.command(name="bostercall")
@@ -8599,7 +8599,7 @@ async def cmd_bostercall(ctx, canal_id: int = None):
         return
 
     if canal_id is None:
-        aviso = await ctx.send("⚠️ Uso: `.bostercall <ID do canal de voz>`")
+        aviso = await ctx.send("⚠️ Uso: `!bostercall <ID do canal de voz>`")
         await _apagar_mensagem_depois(aviso, 15)
         return
 
@@ -8634,7 +8634,7 @@ async def cmd_bostercall(ctx, canal_id: int = None):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# .vantagem — comando interno, só o Reality (CRIADOR_ID) pode usar.
+# !vantagem — comando interno, só o Reality (CRIADOR_ID) pode usar.
 # Marca alguém pra GANHAR garantido a PRÓXIMA batalha (.desafio) que ela
 # participar, seja como desafiante ou desafiada — pula o sorteio normal de
 # vitória e o de roubo de XP: ela vence na hora e saqueia entre
@@ -8643,7 +8643,7 @@ async def cmd_bostercall(ctx, canal_id: int = None):
 # A Vantagem fica "guardada" até a próxima batalha de verdade acontecer
 # (não expira sozinha) e é consumida (removida) nesse momento.
 # De propósito NÃO aparece em nenhum lugar do help/ajuda.
-# Uso (PV ou servidor): .vantagem <ID ou @membro>
+# Uso (PV ou servidor): !vantagem <ID ou @membro>
 # ══════════════════════════════════════════════════════════════════════
 
 @bot.command(name="vantagem")
@@ -8654,7 +8654,7 @@ async def cmd_vantagem(ctx, alvo_id: int = None):
     if alvo_id is None and ctx.message.mentions:
         alvo_id = ctx.message.mentions[0].id
     if alvo_id is None:
-        aviso = await ctx.send("⚠️ Uso: `.vantagem <ID ou @membro>`")
+        aviso = await ctx.send("⚠️ Uso: `!vantagem <ID ou @membro>`")
         await _apagar_mensagem_depois(aviso, 15)
         return
 
@@ -8669,21 +8669,21 @@ async def cmd_vantagem(ctx, alvo_id: int = None):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# .vantagemfossio — comando interno, só o Reality (CRIADOR_ID) pode usar.
-# Parecida com .vantagem (vitória garantida), com 3 diferenças:
+# !vantagemfossio — comando interno, só o Reality (CRIADOR_ID) pode usar.
+# Parecida com !vantagem (vitória garantida), com 3 diferenças:
 #   1. Só destrava numa batalha em que desafiante e desafiado estejam os
 #      dois na MESMA call no momento do combate. Se a próxima batalha dela
 #      rolar sem os dois em call juntos, a Vantagem fica pendente e não é
 #      gasta — espera uma batalha em que a condição bata.
 #   2. Rouba entre _VANTAGEM_FOSSIO_ROUBO_MIN e _MAX de XP (10% a 20%,
-#      faixa própria, mais baixa que a do .vantagem normal).
+#      faixa própria, mais baixa que a do !vantagem normal).
 #   3. Garante o desenterro de um 🦴 Fóssil nessa vitória também (pulando
 #      o sorteio de _FOSSIL_CHANCE_DESBLOQUEIO), se ainda sobrar algum
 #      Fóssil pra quem venceu destravar.
 # Usa exatamente o mesmo texto de resultado/log de sempre — ninguém no
 # chat consegue perceber que a batalha foi arranjada.
 # De propósito NÃO aparece em nenhum lugar do help/ajuda.
-# Uso (PV ou servidor): .vantagemfossio <ID ou @membro>
+# Uso (PV ou servidor): !vantagemfossio <ID ou @membro>
 # ══════════════════════════════════════════════════════════════════════
 
 @bot.command(name="vantagemfossio")
@@ -8694,7 +8694,7 @@ async def cmd_vantagemfossio(ctx, alvo_id: int = None):
     if alvo_id is None and ctx.message.mentions:
         alvo_id = ctx.message.mentions[0].id
     if alvo_id is None:
-        aviso = await ctx.send("⚠️ Uso: `.vantagemfossio <ID ou @membro>`")
+        aviso = await ctx.send("⚠️ Uso: `!vantagemfossio <ID ou @membro>`")
         await _apagar_mensagem_depois(aviso, 15)
         return
 
@@ -8715,12 +8715,12 @@ class BauView(discord.ui.View):
     """View do baú — só a PRIMEIRA pessoa que clicar leva o prêmio; quem
     clicar depois disso só recebe um aviso de que já foi levado.
 
-    `forcar_secreto=True` é usado pelo .bausecreto: o visual e o texto são
+    `forcar_secreto=True` é usado pelo !bausecreto: o visual e o texto são
     IDÊNTICOS ao baú normal (mesmo título, mesma descrição, mesmo gif) — só
     que quem clicar primeiro leva garantidamente uma criatura 🌌 Secreta
     ainda não desbloqueada, sem precisar do sorteio de _BAU_CHANCE_SECRETO.
 
-    `forcar_mimic=True` é usado pelo .baumimic: visual e texto também
+    `forcar_mimic=True` é usado pelo !baumimic: visual e texto também
     IDÊNTICOS ao baú normal ANTES de abrir (é um Mimic disfarçado, ninguém
     pode desconfiar!) — mas quem clicar primeiro cai numa armadilha e PERDE
     entre _BAU_MIMIC_XP_MIN e _BAU_MIMIC_XP_MAX do XP dela, em vez de ganhar."""
@@ -8782,7 +8782,7 @@ class BauView(discord.ui.View):
         # 🌌 Prêmio mais raro de todos: uma criatura Secreta ainda não
         # desbloqueada. Se a pessoa já tiver as 6, cai pro sorteio normal
         # (booster/xp) em vez de travar sem ter mais nada pra dar — mesmo
-        # no .bausecreto, que só GARANTE o secreto quando ainda sobra algum.
+        # no !bausecreto, que só GARANTE o secreto quando ainda sobra algum.
         _secretos_faltando = [
             c for c in _BATALHA_CRIATURAS
             if c["raridade"] == "secreto" and c["id"] not in dados["criaturas"]
@@ -8799,7 +8799,7 @@ class BauView(discord.ui.View):
                 f"🌌✨ **PRÊMIO RARÍSSIMO!!** {membro.mention} encontrou algo que quase ninguém acha... "
                 f"{info_raridade_secreta['emoji']} **{criatura_secreta['nome']}** "
                 f"(*{info_raridade_secreta['label']}*) foi desbloqueada e entrou pra sua coleção!! "
-                f"Use `.criaturas` pra conferir. 🌌"
+                f"Use `!criaturas` pra conferir. 🌌"
             )
         elif random.random() < _BAU_CHANCE_BOOSTER:
             # ── Prêmio raro: booster de 5 min que dobra xp de call e mensagem ──
@@ -8846,8 +8846,8 @@ class BauView(discord.ui.View):
 
 
 def _montar_embed_bau() -> discord.Embed:
-    """Monta o embed de anúncio do baú — usado tanto pelo .bau normal quanto
-    pelo .bausecreto, propositalmente IDÊNTICO nos dois, pra quem estiver no
+    """Monta o embed de anúncio do baú — usado tanto pelo !bau normal quanto
+    pelo !bausecreto, propositalmente IDÊNTICO nos dois, pra quem estiver no
     chat não conseguir diferenciar um do outro só de olhar."""
     embed = discord.Embed(
         title="🪙 Um Baú Apareceu!",
@@ -8869,7 +8869,7 @@ def _montar_embed_bau() -> discord.Embed:
 async def cmd_bau(ctx):
     """Joga um baú de recompensa no canal do chat geral — a primeira pessoa
     que clicar no botão leva o prêmio. Só o Reality pode usar. A própria
-    mensagem do comando some logo em seguida. Uso: .bau"""
+    mensagem do comando some logo em seguida. Uso: !bau"""
     if ctx.author.id != CRIADOR_ID:
         return
 
@@ -8890,11 +8890,11 @@ async def cmd_bau(ctx):
 
 @bot.command(name="bausecreto")
 async def cmd_bausecreto(ctx):
-    """Joga um baú IDÊNTICO ao .bau normal (mesmo visual, mesmo texto,
+    """Joga um baú IDÊNTICO ao !bau normal (mesmo visual, mesmo texto,
     ninguém no chat consegue diferenciar) — mas quem clicar primeiro leva
     GARANTIDAMENTE uma criatura 🌌 Secreta ainda não desbloqueada (a não
     ser que já tenha as 6, aí cai no sorteio normal do baú). Só o Reality
-    pode usar. Uso: .bausecreto"""
+    pode usar. Uso: !bausecreto"""
     if ctx.author.id != CRIADOR_ID:
         return
 
@@ -8915,11 +8915,11 @@ async def cmd_bausecreto(ctx):
 
 @bot.command(name="baumimic")
 async def cmd_baumimic(ctx):
-    """Joga um baú IDÊNTICO ao .bau normal (mesmo visual, mesmo texto,
+    """Joga um baú IDÊNTICO ao !bau normal (mesmo visual, mesmo texto,
     ninguém no chat consegue diferenciar) — mas é, na verdade, um Mimic
     disfarçado: quem clicar primeiro cai numa armadilha e PERDE entre
     `_BAU_MIMIC_XP_MIN` e `_BAU_MIMIC_XP_MAX` (até 20%) do XP dela, em vez
-    de ganhar. Só o Reality pode usar. Uso: .baumimic"""
+    de ganhar. Só o Reality pode usar. Uso: !baumimic"""
     if ctx.author.id != CRIADOR_ID:
         return
 
@@ -8940,7 +8940,7 @@ async def cmd_baumimic(ctx):
 
 # ══════════════════════════════════════════════════════════════════════
 # BOSS — o Dragão do Caos
-# Comando .boss (só o Reality/CRIADOR_ID pode ativar) invoca uma fera
+# Comando !boss (só o Reality/CRIADOR_ID pode ativar) invoca uma fera
 # mítica gigantesca no canal _BOSS_CANAL_ID. O chat escolhe entre encarar
 # sozinho (bem arriscado, só 5% de chance) ou chamar todo mundo pra lutar
 # junto (mais gente = mais chance, mas ainda é um boss difícil de verdade).
@@ -9355,7 +9355,7 @@ async def cmd_boss(ctx):
     """🐉 Invoca o Dragão do Caos no canal do chat geral — só o Reality
     (CRIADOR_ID) pode chamar. O chat escolhe entre encarar sozinho (5% de
     chance) ou juntar um time (mais gente = mais chance, mas ainda é um
-    boss bem difícil). Uso: .boss"""
+    boss bem difícil). Uso: !boss"""
     if ctx.author.id != CRIADOR_ID:
         return
 
@@ -9402,7 +9402,7 @@ async def cmd_boss(ctx):
 
 # ══════════════════════════════════════════════════════════════════════
 # OVO — recompensa manual por vencer o Dragão do Caos
-# Comando `.ovo <ID ou @membro>` (só o Reality/CRIADOR_ID pode usar) dá um
+# Comando `!ovo <ID ou @membro>` (só o Reality/CRIADOR_ID pode usar) dá um
 # 🥚 ovo pendente pra alguém. O ovo choca sozinho quando a pessoa acumular
 # `_OVO_TEMPO_CHOCAR_SEGUNDOS` numa call — não precisa ser de uma vez só,
 # o tempo soma mesmo se ela sair e voltar depois. Ao chocar, sai uma
@@ -9485,7 +9485,7 @@ async def _ovo_chocar(user_id: int) -> None:
             f"👽 **Renan:** ...{mencao}, seu ovo chocou. Depois de tanto tempo na call, olha só quem "
             f"nasceu: {info_raridade['emoji']} **{criatura_nascida['nome']}** "
             f"(*{info_raridade['label']}*). Eu aprovo.\n\n"
-            "Use `.criaturas` pra conferir sua coleção. 📖"
+            "Use `!criaturas` pra conferir sua coleção. 📖"
         ),
         color=info_raridade["cor"],
         timestamp=discord.utils.utcnow(),
@@ -9523,14 +9523,14 @@ async def cmd_ovo(ctx, alvo_id: int = None):
     """Dá um 🥚 ovo pendente pra alguém — recompensa por vencer o Dragão
     do Caos. O ovo choca sozinho quando a pessoa acumular
     `_OVO_TEMPO_CHOCAR_SEGUNDOS` numa call. Só o Reality pode usar.
-    Uso: .ovo <ID ou @membro>"""
+    Uso: !ovo <ID ou @membro>"""
     if ctx.author.id != CRIADOR_ID:
         return
 
     if alvo_id is None and ctx.message.mentions:
         alvo_id = ctx.message.mentions[0].id
     if alvo_id is None:
-        await ctx.send("⚠️ **Uso correto:** `.ovo <ID ou @membro>`")
+        await ctx.send("⚠️ **Uso correto:** `!ovo <ID ou @membro>`")
         return
 
     guild = ctx.guild or (bot.guilds[0] if bot.guilds else None)
@@ -9556,8 +9556,8 @@ async def cmd_ovo(ctx, alvo_id: int = None):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# OVO DE DRAGÃO — igual ao .ovo normal, mas o ovo aqui é garantidamente
-# um 🐉 Dragão (raridade mítica). Mesmíssima mecânica: `.ovodragao <ID ou
+# OVO DE DRAGÃO — igual ao !ovo normal, mas o ovo aqui é garantidamente
+# um 🐉 Dragão (raridade mítica). Mesmíssima mecânica: `!ovodragao <ID ou
 # @membro>` (só o Reality/CRIADOR_ID pode usar) dá o ovo pendente, a pessoa
 # precisa acumular `_OVO_DRAGAO_TEMPO_CHOCAR_SEGUNDOS` numa call (o tempo
 # soma mesmo saindo e voltando) e, ao chocar, nasce um dragão aleatório
@@ -9644,7 +9644,7 @@ async def _ovo_dragao_chocar(user_id: int) -> None:
             f"👽 **Renan:** ...{mencao}, ele chocou. A espera valeu cada segundo — olha só o que "
             f"estava dormindo ali dentro: {info_raridade['emoji']} **{dragao_nascido['nome']}** "
             f"(*{info_raridade['label']}*). Um dragão reconhece outro guerreiro.\n\n"
-            "Use `.criaturas` pra conferir sua coleção. 📖"
+            "Use `!criaturas` pra conferir sua coleção. 📖"
         ),
         color=info_raridade["cor"],
         timestamp=discord.utils.utcnow(),
@@ -9669,17 +9669,17 @@ async def loop_checar_ovos_dragao():
 
 @bot.command(name="ovodragao", aliases=["ovodragão"])
 async def cmd_ovodragao(ctx, alvo_id: int = None):
-    """Dá um 🐉🥚 ovo de dragão pendente pra alguém. Igual ao .ovo normal,
+    """Dá um 🐉🥚 ovo de dragão pendente pra alguém. Igual ao !ovo normal,
     mas o que nasce é garantidamente um dragão. Anuncia a entrega no chat
     geral com uma introdução épica. Só o Reality pode usar.
-    Uso: .ovodragao <ID ou @membro>"""
+    Uso: !ovodragao <ID ou @membro>"""
     if ctx.author.id != CRIADOR_ID:
         return
 
     if alvo_id is None and ctx.message.mentions:
         alvo_id = ctx.message.mentions[0].id
     if alvo_id is None:
-        await ctx.send("⚠️ **Uso correto:** `.ovodragao <ID ou @membro>`")
+        await ctx.send("⚠️ **Uso correto:** `!ovodragao <ID ou @membro>`")
         return
 
     guild = ctx.guild or (bot.guilds[0] if bot.guilds else None)
@@ -9717,13 +9717,13 @@ async def cmd_ovodragao(ctx, alvo_id: int = None):
     if canal_geral is not None:
         await canal_geral.send(embed=embed_intro)
 
-    # Se o comando foi usado fora do chat geral (ex.: no PV, como o .ovo normal),
+    # Se o comando foi usado fora do chat geral (ex.: no PV, como o !ovo normal),
     # manda uma confirmação simples pro Reality também.
     if canal_geral is None or ctx.channel.id != canal_geral.id:
         await ctx.send(f"✅ Ovo de dragão entregue pra {mencao} — anunciado no chat geral.")
 
 
-# Comando .boss2 (só o Reality/CRIADOR_ID pode ativar) invoca o boss mais
+# Comando !boss2 (só o Reality/CRIADOR_ID pode ativar) invoca o boss mais
 # difícil já criado — Dourakhar, o Arauto da Morte. Mesma lógica do Dragão
 # do Caos (encarar sozinho ou chamar o time todo), mas TUDO mais difícil:
 # menos chance de vitória em qualquer cenário, mesmo com mais gente lutando
@@ -10128,7 +10128,7 @@ async def cmd_boss2(ctx):
     O chat escolhe entre encarar sozinho (1% de chance) ou juntar um time
     (mais gente = mais chance, mas ainda assim MUITO mais difícil que o
     boss 1). Quem vencer ganha um pouco mais de XP que no boss 1 e também
-    leva um Booster de XP de 5 minutos. Uso: .boss2"""
+    leva um Booster de XP de 5 minutos. Uso: !boss2"""
     if ctx.author.id != CRIADOR_ID:
         return
 
@@ -10176,7 +10176,7 @@ async def cmd_boss2(ctx):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Comando .boss3 (só o Reality/CRIADOR_ID pode ativar) invoca Zephyrus, o
+# Comando !boss3 (só o Reality/CRIADOR_ID pode ativar) invoca Zephyrus, o
 # Guardião do Véu Arcano — nível mítico, um pouco mais fraco que Dourakhar
 # (boss2) mas ainda bem mais difícil que o Dragão do Caos (boss1). Mesma
 # lógica de sempre (encarar sozinho ou chamar o time), mas Zephyrus entra
@@ -10583,7 +10583,7 @@ async def cmd_boss3(ctx):
     que o Dragão do Caos (boss1). Só o Reality (CRIADOR_ID) pode chamar.
     O chat escolhe entre encarar sozinho (3% de chance) ou juntar um time
     (mais gente = mais chance). Quem vencer ganha XP e leva um Booster de
-    XP de apenas 2 minutos. Uso: .boss3"""
+    XP de apenas 2 minutos. Uso: !boss3"""
     if ctx.author.id != CRIADOR_ID:
         return
 
@@ -11098,7 +11098,7 @@ async def cmd_boss4(ctx):
     mítica, com o bônus por participante MAIS FORTE de todos os bosses:
     quanto mais gente entrar, mais rápido a chance sobe. Só o Reality
     (CRIADOR_ID) pode chamar. Quem vencer ganha XP e um Booster de XP de
-    5 minutos — o maior de todos os bosses. Uso: .boss4"""
+    5 minutos — o maior de todos os bosses. Uso: !boss4"""
     if ctx.author.id != CRIADOR_ID:
         return
 
@@ -11159,7 +11159,7 @@ async def cmd_boss4(ctx):
 # e uma CHANCE de vir junto um 🥚 ovo aleatório, sorteado só entre
 # criaturas 🟣 Épicas e 🟡 Lendárias. Se a criatura que sair já estiver na
 # coleção da pessoa, em vez de não fazer nada ela sobe 1 Nível de
-# Capacidade (mesma lógica de .uparcriatura), travado no teto máximo.
+# Capacidade (mesma lógica de !uparcriatura), travado no teto máximo.
 # ══════════════════════════════════════════════════════════════════════
 
 # ⚠️ Esses gifs são links temporários do CDN do Discord (parâmetros ?ex=...),
@@ -11247,7 +11247,7 @@ def _boss5_conceder_ovo(user_id: int) -> dict:
     ela ainda não tiver essa criatura, ela é adicionada normalmente à
     coleção. Se ela JÁ tiver (repetida), em vez de não fazer nada, a
     criatura sobe 1 Nível de Capacidade — empurrando os usos pro limiar do
-    próximo nível, igual `.uparcriatura` — travado no teto máximo (se já
+    próximo nível, igual `!uparcriatura` — travado no teto máximo (se já
     estiver no máximo, o ovo simplesmente não muda nada). Devolve um dict
     com `criatura`, `era_nova`, `nivel_novo` (ou None se era nova) e
     `upou` (True se realmente subiu de nível agora)."""
@@ -11668,7 +11668,7 @@ async def cmd_boss5(ctx):
     entre todos os bosses, mas leva um Booster de XP de 10 minutos — o mais
     longo de todos — e tem 35% de chance de vir junto um 🥚 ovo aleatório
     entre criaturas Épicas e Lendárias (se for repetido, a criatura sobe de
-    Nível de Capacidade em vez de não fazer nada). Uso: .boss5"""
+    Nível de Capacidade em vez de não fazer nada). Uso: !boss5"""
     if ctx.author.id != CRIADOR_ID:
         return
 
@@ -11744,12 +11744,12 @@ async def cmd_ajuda(ctx):
     embed.add_field(
         name="🎵 Música",
         value=(
-            "`.tocar <link/nome>` — toca ou enfileira uma música "
+            "`!tocar <link/nome>` — toca ou enfileira uma música "
             "(YouTube, Spotify, SoundCloud, playlists inteiras)\n"
-            "`.setup` — reenvia o painel de música pra esse canal\n"
-            "`.letras` — link direto pra letra da música tocando agora\n"
-            "`.sair` — para tudo, limpa a fila, eu vou embora "
-            "(aliases: `.parar`, `.stop`)"
+            "`!setup` — reenvia o painel de música pra esse canal\n"
+            "`!letras` — link direto pra letra da música tocando agora\n"
+            "`!sair` — para tudo, limpa a fila, eu vou embora "
+            "(aliases: `!parar`, `!stop`)"
         ),
         inline=False,
     )
@@ -11767,7 +11767,7 @@ async def cmd_ajuda(ctx):
             f"Painel de tickets em <#{CANAL_PAINEL_TICKET_ID}> — escolha uma "
             "opção no **menu** pra falar com a staff em particular.\n"
             "Só a staff pode clicar em **Fechar Ticket**.\n"
-            "`.feedback` (staff) — dentro de um ticket aberto, manda pro "
+            "`!feedback` (staff) — dentro de um ticket aberto, manda pro "
             "dono o pedido de avaliação do atendimento."
         ),
         inline=False,
@@ -11796,7 +11796,7 @@ async def cmd_ajuda(ctx):
     )
     embed.add_field(
         name="👽 Sobre",
-        value="`.sobre` — quem eu sou, se você não sabia",
+        value="`!sobre` — quem eu sou, se você não sabia",
         inline=False,
     )
     embed.set_footer(text="Prefixo: !")
@@ -11938,7 +11938,7 @@ async def on_voice_state_update(
     member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
 ):
     """RPG: Booster de Call (streak de xp em call) e a contagem de tempo dos
-    Ovos pendentes (.ovo / .ovodragao) — roda isolado pra nunca quebrar
+    Ovos pendentes (!ovo / !ovodragao) — roda isolado pra nunca quebrar
     nenhuma outra funcionalidade do bot."""
     if member.bot:
         return
@@ -12166,7 +12166,7 @@ async def on_message(message: discord.Message):
         return
 
     # Auto-play: link solto de música (YouTube/Spotify/SoundCloud) já
-    # entra direto na fila, sem precisar de .tocar na frente.
+    # entra direto na fila, sem precisar de !tocar na frente.
     try:
         await _processar_link_solto(message)
     except Exception as e:
