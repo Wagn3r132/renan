@@ -97,6 +97,10 @@ CARGOS_STAFF_IDS = [    # cargos que enxergam e atendem os tickets abertos
     1501260059185774674,  # owner
 ]
 
+# ── Painel de criação de grupos (cargo + categoria + chat + call) ──
+CANAL_PAINEL_GRUPO_ID = 1539085642397384755      # canal onde fica fixado o painel com o botão "Criar Grupo"
+CATEGORIA_REFERENCIA_GRUPO_ID = 1501260062801530902  # a nova categoria do grupo nasce logo abaixo desta
+
 # Imagem usada no embed de boas-vindas (banner grande, junto com o texto)
 IMAGEM_BOAS_VINDAS = (
     "https://cdn.discordapp.com/attachments/926913851172204577/"
@@ -116,6 +120,13 @@ IMAGEM_TICKET = (
     "https://cdn.discordapp.com/attachments/926913851172204577/"
     "1536200014827888680/ChatGPT_Image_9_de_ago._de_2026_23_30_09.png"
     "?ex=6a7a8940&is=6a7937c0&hm=34987530726ddc9b2c61cbd25a66050e7285b4f392cfb8daa12ecf2a76c84098"
+)
+
+# Imagem usada no painel de criação de grupos
+IMAGEM_GRUPO = (
+    "https://cdn.discordapp.com/attachments/926913851172204577/"
+    "1539092615377461259/ChatGPT_Image_17_de_ago._de_2026_23_04_21.png"
+    "?ex=6a850f32&is=6a83bdb2&hm=0b5e19a2b6509d44912a3f3c45e6224a862d3eee630a4841628933ebbd9142ee"
 )
 
 # Imagem usada nas instruções de como deixar feedback do atendimento
@@ -1943,6 +1954,354 @@ async def cmd_feedback(ctx):
 
     view = _ViewAvaliarAtendimento(ctx.channel.id)
     await ctx.send(content=f"<@{dono_id}>", embed=embed, view=view)
+
+
+# ══════════════════════════════════════════════════════════════════
+# CRIAÇÃO DE GRUPOS
+#
+# Painel fixo (embed + botão "📁 Criar Grupo") em CANAL_PAINEL_GRUPO_ID.
+# Quem clicar preenche uma ficha (modal) com nome do grupo, cor do
+# cargo e os nomes da categoria/chat/call, depois escolhe (num select
+# de membros, fora do modal — modal não tem esse tipo de campo) quem
+# recebe o cargo. A partir disso o Renan:
+#
+#   1. cria o CARGO (nome = grupo resumido, cor = a informada);
+#   2. cria a CATEGORIA logo abaixo de CATEGORIA_REFERENCIA_GRUPO_ID;
+#   3. dentro dela, cria o CHAT (texto) e a CALL (voz);
+#   4. bloqueia tudo isso pra @everyone e libera só pra quem tem o
+#      cargo — e dá o cargo pra cada pessoa selecionada na ficha.
+#
+# O painel em si é uma view persistente (custom_id fixo, sobrevive a
+# restart, igual ao painel de tickets). O select de membros e o modal
+# são só da interação (não precisam sobreviver restart).
+# ══════════════════════════════════════════════════════════════════
+
+_GRUPOS_DATA_PATH = os.getenv("GRUPOS_DATA_PATH", "/data/grupos_painel.json")
+
+
+def _carregar_dados_painel_grupo() -> dict:
+    try:
+        with open(_GRUPOS_DATA_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _salvar_dados_painel_grupo(dados: dict) -> None:
+    try:
+        pasta = os.path.dirname(_GRUPOS_DATA_PATH)
+        if pasta:
+            os.makedirs(pasta, exist_ok=True)
+        with open(_GRUPOS_DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        print(f"[renan-grupo] não consegui salvar {_GRUPOS_DATA_PATH}: {e!r}")
+
+
+def _cor_hex_para_colour(texto: str) -> discord.Colour:
+    """Aceita '#FF0000', 'FF0000' ou 'f00'-like só com 6 dígitos hex.
+    Levanta ValueError se não for um hex válido de cor."""
+    limpo = texto.strip().lstrip("#")
+    if not re.fullmatch(r"[0-9a-fA-F]{6}", limpo):
+        raise ValueError(f"cor hex inválida: {texto!r}")
+    return discord.Colour(int(limpo, 16))
+
+
+class SelectMembrosGrupo(discord.ui.UserSelect):
+    """Select de membros (fora do modal — modal não suporta esse tipo
+    de campo) usado pra escolher quem recebe o cargo do grupo."""
+
+    def __init__(self, ficha: dict):
+        super().__init__(
+            placeholder="Selecione quem vai receber o cargo (pode ser mais de um)",
+            min_values=1,
+            max_values=25,
+        )
+        self.ficha = ficha
+
+    async def callback(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        membros = []
+        for valor in self.values:
+            if isinstance(valor, discord.Member):
+                membros.append(valor)
+                continue
+            try:
+                membros.append(await guild.fetch_member(valor.id))
+            except discord.HTTPException:
+                continue  # saiu do servidor ou não achei — ignora essa pessoa
+
+        if not membros:
+            await interaction.response.send_message(
+                "Não consegui validar ninguém dessa seleção. Tenta de novo.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await _criar_grupo(interaction, self.ficha, membros)
+
+
+class ViewSelecionarMembrosGrupo(discord.ui.View):
+    """View efêmera (não precisa sobreviver restart) que carrega o
+    select de membros logo depois que a ficha do modal é enviada."""
+
+    def __init__(self, ficha: dict):
+        super().__init__(timeout=300)
+        self.add_item(SelectMembrosGrupo(ficha))
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
+
+class ModalCriarGrupo(discord.ui.Modal, title="Criar Grupo"):
+    """Ficha preenchida por quem clica em '📁 Criar Grupo' no painel."""
+
+    nome_grupo = discord.ui.TextInput(
+        label="Nome do grupo (resumido)",
+        placeholder="Ex.: Squad Duo",
+        max_length=32,
+        required=True,
+    )
+    cor_cargo = discord.ui.TextInput(
+        label="Cor do cargo (hex)",
+        placeholder="Ex.: FF0000 ou #FF0000",
+        max_length=7,
+        required=True,
+    )
+    nome_categoria = discord.ui.TextInput(
+        label="Nome da categoria",
+        placeholder="Ex.: 🎮 SQUAD DUO",
+        max_length=50,
+        required=True,
+    )
+    nome_chat = discord.ui.TextInput(
+        label="Nome do chat (texto)",
+        placeholder="Ex.: chat-squad-duo",
+        max_length=50,
+        required=True,
+    )
+    nome_call = discord.ui.TextInput(
+        label="Nome da call (voz)",
+        placeholder="Ex.: Call Squad Duo",
+        max_length=50,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            cor = _cor_hex_para_colour(str(self.cor_cargo))
+        except ValueError:
+            await interaction.response.send_message(
+                "Essa cor não é um hex válido. Manda algo tipo `FF0000` ou `#00FF00`.",
+                ephemeral=True,
+            )
+            return
+
+        ficha = {
+            "nome_grupo": str(self.nome_grupo).strip(),
+            "cor": cor,
+            "nome_categoria": str(self.nome_categoria).strip(),
+            "nome_chat": str(self.nome_chat).strip(),
+            "nome_call": str(self.nome_call).strip(),
+        }
+
+        await interaction.response.send_message(
+            f"Ficha recebida pro grupo **{ficha['nome_grupo']}**. Agora seleciona "
+            "quem vai receber o cargo (pode marcar mais de uma pessoa):",
+            view=ViewSelecionarMembrosGrupo(ficha),
+            ephemeral=True,
+        )
+
+
+class PainelGrupo(discord.ui.View):
+    """View fixa do painel de criação de grupos — só o botão que abre
+    o modal da ficha."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Criar Grupo",
+        emoji="📁",
+        style=discord.ButtonStyle.primary,
+        custom_id="renan_grupo_criar",
+    )
+    async def criar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModalCriarGrupo())
+
+
+async def _criar_grupo(
+    interaction: discord.Interaction, ficha: dict, membros: list[discord.Member]
+) -> None:
+    """Roda depois que a ficha (modal) + a seleção de membros (select)
+    estão completas: cria o cargo, a categoria e os dois canais, tranca
+    tudo pra @everyone e libera só pra quem tem o cargo, e dá o cargo
+    pra cada pessoa selecionada."""
+    guild = interaction.guild
+    if guild is None:
+        return
+
+    try:
+        cargo = await guild.create_role(
+            name=ficha["nome_grupo"],
+            colour=ficha["cor"],
+            reason=f"Grupo '{ficha['nome_grupo']}' criado por {interaction.user} (painel de grupos)",
+        )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "Sem permissão pra criar o cargo (falta 'Gerenciar Cargos'). Fala com a staff.",
+            ephemeral=True,
+        )
+        return
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        cargo: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            connect=True,
+            speak=True,
+        ),
+        guild.me: discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, connect=True, manage_channels=True
+        ),
+    }
+
+    categoria_referencia = guild.get_channel(CATEGORIA_REFERENCIA_GRUPO_ID)
+    posicao_alvo = (categoria_referencia.position + 1) if categoria_referencia is not None else None
+
+    try:
+        nova_categoria = await guild.create_category(
+            name=ficha["nome_categoria"],
+            overwrites=overwrites,
+            reason=f"Categoria do grupo '{ficha['nome_grupo']}' criada por {interaction.user}",
+        )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "Cargo criado, mas faltou permissão ('Gerenciar Canais') pra criar a "
+            "categoria. Fala com a staff.",
+            ephemeral=True,
+        )
+        return
+
+    if posicao_alvo is not None:
+        try:
+            await nova_categoria.edit(position=posicao_alvo)
+        except discord.HTTPException as e:
+            print(f"[renan-grupo] não consegui posicionar a categoria '{nova_categoria.name}': {e!r}")
+
+    try:
+        canal_chat = await guild.create_text_channel(
+            name=ficha["nome_chat"],
+            category=nova_categoria,
+            overwrites=overwrites,
+            reason=f"Chat do grupo '{ficha['nome_grupo']}'",
+        )
+        canal_call = await guild.create_voice_channel(
+            name=ficha["nome_call"],
+            category=nova_categoria,
+            overwrites=overwrites,
+            reason=f"Call do grupo '{ficha['nome_grupo']}'",
+        )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "Cargo e categoria criados, mas faltou permissão pra criar o chat/call "
+            "dentro dela. Fala com a staff.",
+            ephemeral=True,
+        )
+        return
+
+    falhas_cargo = []
+    for membro in membros:
+        try:
+            await membro.add_roles(cargo, reason=f"Grupo '{ficha['nome_grupo']}'")
+        except discord.Forbidden:
+            falhas_cargo.append(membro.mention)
+
+    embed = discord.Embed(
+        title="📁 Grupo criado",
+        description=(
+            f"**{ficha['nome_grupo']}** tá de pé. Só quem tem {cargo.mention} "
+            "enxerga isso daqui."
+        ),
+        color=ficha["cor"],
+    )
+    embed.add_field(name="Cargo", value=cargo.mention, inline=True)
+    embed.add_field(name="Categoria", value=nova_categoria.name, inline=True)
+    embed.add_field(
+        name="Canais", value=f"{canal_chat.mention}\n{canal_call.mention}", inline=True
+    )
+    embed.add_field(
+        name="Quem recebeu o cargo",
+        value=", ".join(m.mention for m in membros),
+        inline=False,
+    )
+    if falhas_cargo:
+        embed.add_field(
+            name="⚠️ Não consegui dar o cargo pra",
+            value=", ".join(falhas_cargo),
+            inline=False,
+        )
+    embed.set_footer(text="👽 Renan  •  painel de grupos")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+    try:
+        await canal_chat.send(
+            content=" ".join(m.mention for m in membros),
+            embed=embed,
+        )
+    except discord.HTTPException as e:
+        print(f"[renan-grupo] não consegui mandar a mensagem de boas-vindas no chat do grupo: {e!r}")
+
+
+async def _configurar_painel_grupo() -> None:
+    """Roda quando o bot conecta: publica ou atualiza o painel fixo de
+    criação de grupos no canal configurado."""
+    if not CANAL_PAINEL_GRUPO_ID:
+        print("[renan-grupo] CANAL_PAINEL_GRUPO_ID não configurado — pulei o painel de grupos.")
+        return
+
+    canal = bot.get_channel(CANAL_PAINEL_GRUPO_ID)
+    if canal is None:
+        print(f"[renan-grupo] canal {CANAL_PAINEL_GRUPO_ID} não encontrado — pulei o painel de grupos.")
+        return
+
+    embed = discord.Embed(
+        title="📁 Criar Grupo",
+        description=(
+            "Clica no botão abaixo e preenche a ficha: nome do grupo, cor do "
+            "cargo, e os nomes da categoria, do chat e da call.\n\n"
+            "Depois de enviar a ficha, você escolhe quem recebe o cargo — "
+            "só essas pessoas (e quem for selecionado) vão enxergar o que for criado."
+        ),
+        color=COR_RENAN,
+    )
+    embed.set_image(url=IMAGEM_GRUPO)
+    embed.set_footer(text="👽 Renan está observando.")
+
+    dados = _carregar_dados_painel_grupo()
+    mensagem_id = dados.get("painel_mensagem_id")
+
+    if mensagem_id:
+        try:
+            mensagem = await canal.fetch_message(mensagem_id)
+            await mensagem.edit(embed=embed, view=PainelGrupo())
+            return
+        except (discord.NotFound, discord.HTTPException):
+            pass  # mensagem antiga não existe mais — cria uma nova abaixo
+
+    try:
+        nova_mensagem = await canal.send(embed=embed, view=PainelGrupo())
+        dados["painel_mensagem_id"] = nova_mensagem.id
+        _salvar_dados_painel_grupo(dados)
+    except discord.Forbidden:
+        print(f"[renan-grupo] sem permissão pra enviar mensagem em #{canal.name}.")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -11293,6 +11652,11 @@ async def on_ready():
             await _configurar_painel_ticket()
         except Exception as e:
             print(f"[renan-ticket] erro ao configurar painel de atendimento: {e!r}")
+        try:
+            bot.add_view(PainelGrupo())   # registra o botão como persistente (sobrevive a restart)
+            await _configurar_painel_grupo()
+        except Exception as e:
+            print(f"[renan-grupo] erro ao configurar painel de grupos: {e!r}")
         try:
             dados_sugestoes = _carregar_dados_sugestoes()
             for sug_id in dados_sugestoes.keys():
