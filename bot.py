@@ -151,6 +151,88 @@ IMAGEM_MISSOES_ORBS = (
 
 
 # ══════════════════════════════════════════════════════════════════════
+# UTILITÁRIOS DE PAINÉIS FIXOS
+#
+# Funções compartilhadas pelos painéis "únicos" (tickets, grupos, etc.):
+# uma mensagem só, publicada uma vez e reaproveitada/editada nas vezes
+# seguintes. Existem pra resolver dois problemas:
+#
+#   1. Canal não encontrado no cache no exato instante do on_ready
+#      (bot.get_channel pode falhar por timing, principalmente logo
+#      após conectar) — _garantir_canal tenta o cache primeiro e cai
+#      pra uma busca na API (fetch_channel) antes de desistir.
+#
+#   2. Duplicação do painel quando o arquivo de estado em disco (que
+#      guarda o ID da mensagem) se perde — por exemplo, redeploy num
+#      host sem volume persistente de verdade em /data. Nesse caso o
+#      bot "esquece" o ID e manda uma mensagem nova a cada restart.
+#      _achar_mensagem_painel serve de rede de segurança: antes de
+#      criar uma mensagem nova, procura no histórico recente do canal
+#      por uma mensagem do próprio bot com o mesmo título de embed e
+#      reaproveita ela em vez de duplicar.
+# ══════════════════════════════════════════════════════════════════════
+
+async def _garantir_canal(canal_id: int):
+    """bot.get_channel só olha o cache — pode retornar None por timing
+    logo no on_ready. Aqui cai pra uma busca real na API antes de
+    desistir do canal."""
+    if not canal_id:
+        return None
+    canal = bot.get_channel(canal_id)
+    if canal is not None:
+        return canal
+    try:
+        return await bot.fetch_channel(canal_id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+        print(f"[renan-painel] não consegui achar/acessar o canal {canal_id}: {e!r}")
+        return None
+
+
+async def _achar_mensagem_painel(canal, titulo_esperado: str):
+    """Procura, nas últimas mensagens do canal, uma mensagem do próprio
+    bot cujo embed tenha esse título exato — usada como rede de
+    segurança contra duplicação quando o ID salvo em disco se perde."""
+    try:
+        async for mensagem in canal.history(limit=50):
+            if mensagem.author.id != bot.user.id:
+                continue
+            if any(embed.title == titulo_esperado for embed in mensagem.embeds):
+                return mensagem
+    except discord.HTTPException as e:
+        print(f"[renan-painel] não consegui ler o histórico de #{canal}: {e!r}")
+    return None
+
+
+async def _publicar_ou_reaproveitar_painel(
+    canal, dados: dict, chave_id: str, embed: discord.Embed, view: discord.ui.View
+):
+    """Fluxo único usado pelos painéis fixos: tenta editar a mensagem
+    salva em disco; se o ID sumiu ou não existe mais, procura no
+    histórico do canal antes de criar uma nova (evita duplicar).
+    Retorna a mensagem final (nova ou reaproveitada) — quem chamar é
+    responsável por salvar `mensagem.id` em `dados[chave_id]`."""
+    mensagem_id = dados.get(chave_id)
+
+    if mensagem_id:
+        try:
+            mensagem = await canal.fetch_message(mensagem_id)
+            await mensagem.edit(embed=embed, view=view)
+            return mensagem
+        except (discord.NotFound, discord.HTTPException):
+            pass  # ID salvo não bate mais com nada — segue pra rede de segurança abaixo
+
+    mensagem_existente = await _achar_mensagem_painel(canal, embed.title)
+    if mensagem_existente is not None:
+        try:
+            await mensagem_existente.edit(embed=embed, view=view)
+            return mensagem_existente
+        except discord.HTTPException:
+            pass  # mensagem achada mas não deu pra editar — cria uma nova mesmo
+
+    return await canal.send(embed=embed, view=view)
+
+
+# ══════════════════════════════════════════════════════════════════════
 # PERSONALIDADE
 #
 # Renan é frio, direto, econômico com palavras. Fala como quem já viu
@@ -1865,7 +1947,7 @@ async def _configurar_painel_ticket() -> None:
         print("[renan-ticket] CANAL_PAINEL_TICKET_ID não configurado — pulei o painel de atendimento.")
         return
 
-    canal = bot.get_channel(CANAL_PAINEL_TICKET_ID)
+    canal = await _garantir_canal(CANAL_PAINEL_TICKET_ID)
     if canal is None:
         print(f"[renan-ticket] canal {CANAL_PAINEL_TICKET_ID} não encontrado — pulei o painel de atendimento.")
         return
@@ -1883,22 +1965,16 @@ async def _configurar_painel_ticket() -> None:
     embed.set_footer(text="👽 Renan está observando. Vai ser rápido, eu acho.")
 
     dados = _carregar_dados_tickets()
-    mensagem_id = dados.get("painel_mensagem_id")
-
-    if mensagem_id:
-        try:
-            mensagem = await canal.fetch_message(mensagem_id)
-            await mensagem.edit(embed=embed, view=PainelTicket())
-            return
-        except (discord.NotFound, discord.HTTPException):
-            pass  # mensagem antiga não existe mais — cria uma nova abaixo
-
     try:
-        nova_mensagem = await canal.send(embed=embed, view=PainelTicket())
-        dados["painel_mensagem_id"] = nova_mensagem.id
-        _salvar_dados_tickets(dados)
+        mensagem = await _publicar_ou_reaproveitar_painel(
+            canal, dados, "painel_mensagem_id", embed, PainelTicket()
+        )
     except discord.Forbidden:
-        print(f"[renan-ticket] sem permissão pra enviar mensagem em #{canal.name}.")
+        print(f"[renan-ticket] sem permissão pra enviar/editar mensagem em #{canal.name}.")
+        return
+
+    dados["painel_mensagem_id"] = mensagem.id
+    _salvar_dados_tickets(dados)
 
 
 @bot.command(name="feedback")
@@ -2267,7 +2343,7 @@ async def _configurar_painel_grupo() -> None:
         print("[renan-grupo] CANAL_PAINEL_GRUPO_ID não configurado — pulei o painel de grupos.")
         return
 
-    canal = bot.get_channel(CANAL_PAINEL_GRUPO_ID)
+    canal = await _garantir_canal(CANAL_PAINEL_GRUPO_ID)
     if canal is None:
         print(f"[renan-grupo] canal {CANAL_PAINEL_GRUPO_ID} não encontrado — pulei o painel de grupos.")
         return
@@ -2286,22 +2362,16 @@ async def _configurar_painel_grupo() -> None:
     embed.set_footer(text="👽 Renan está observando.")
 
     dados = _carregar_dados_painel_grupo()
-    mensagem_id = dados.get("painel_mensagem_id")
-
-    if mensagem_id:
-        try:
-            mensagem = await canal.fetch_message(mensagem_id)
-            await mensagem.edit(embed=embed, view=PainelGrupo())
-            return
-        except (discord.NotFound, discord.HTTPException):
-            pass  # mensagem antiga não existe mais — cria uma nova abaixo
-
     try:
-        nova_mensagem = await canal.send(embed=embed, view=PainelGrupo())
-        dados["painel_mensagem_id"] = nova_mensagem.id
-        _salvar_dados_painel_grupo(dados)
+        mensagem = await _publicar_ou_reaproveitar_painel(
+            canal, dados, "painel_mensagem_id", embed, PainelGrupo()
+        )
     except discord.Forbidden:
-        print(f"[renan-grupo] sem permissão pra enviar mensagem em #{canal.name}.")
+        print(f"[renan-grupo] sem permissão pra enviar/editar mensagem em #{canal.name}.")
+        return
+
+    dados["painel_mensagem_id"] = mensagem.id
+    _salvar_dados_painel_grupo(dados)
 
 
 # ══════════════════════════════════════════════════════════════════
