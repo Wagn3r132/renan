@@ -193,16 +193,32 @@ async def _achar_mensagens_painel(canal, titulo_esperado: str) -> list:
     próprio bot cujo embed tenha esse título exato — usada tanto pra
     achar o painel quando o ID salvo em disco se perde, quanto pra
     limpar duplicatas que já tenham sido criadas (ex.: por restarts
-    anteriores sem essa proteção)."""
+    anteriores sem essa proteção).
+
+    limit=500 (era 100) pra não perder painéis antigos em canais que já
+    acumularam bastante coisa. Se o bot não tiver permissão de "Ler
+    Histórico de Mensagens" nesse canal, isso aqui falha silenciosamente
+    (loga e retorna vazio) — o que faz `_publicar_ou_reaproveitar_painel`
+    cair pra criar um painel novo, gerando duplicata. Se está vendo
+    duplicatas mesmo com essa proteção, confere essa permissão."""
     encontradas = []
+    if bot.user is None:
+        print(f"[renan-painel] bot.user ainda é None — pulei a busca em #{canal}.")
+        return encontradas
     try:
-        async for mensagem in canal.history(limit=100):
+        async for mensagem in canal.history(limit=500):
             if mensagem.author.id != bot.user.id:
                 continue
             if any(embed.title == titulo_esperado for embed in mensagem.embeds):
                 encontradas.append(mensagem)
+    except discord.Forbidden as e:
+        print(
+            f"[renan-painel] sem permissão de 'Ler Histórico de Mensagens' em #{canal} "
+            f"— não consigo achar painéis antigos, vou criar um novo: {e!r}"
+        )
     except discord.HTTPException as e:
         print(f"[renan-painel] não consegui ler o histórico de #{canal}: {e!r}")
+    print(f"[renan-painel] '{titulo_esperado}' — {len(encontradas)} painel(is) achado(s) no histórico de #{canal}.")
     return encontradas
 
 
@@ -223,13 +239,18 @@ async def _publicar_ou_reaproveitar_painel(
         try:
             mensagem = await canal.fetch_message(mensagem_id)
             candidatas[mensagem.id] = mensagem
-        except (discord.NotFound, discord.HTTPException):
-            pass  # ID salvo não bate mais com nada — sem problema, a busca abaixo cobre isso
+        except (discord.NotFound, discord.HTTPException) as e:
+            print(
+                f"[renan-painel] ID salvo em disco ({mensagem_id}) não bate mais com nada em "
+                f"#{canal} ({e!r}) — provavelmente o disco não persistiu entre deploys. "
+                "Caindo pra busca no histórico."
+            )
 
     for mensagem in await _achar_mensagens_painel(canal, embed.title):
         candidatas.setdefault(mensagem.id, mensagem)
 
     if not candidatas:
+        print(f"[renan-painel] nenhum painel '{embed.title}' encontrado em #{canal} — criando um novo.")
         return await canal.send(embed=embed, view=view)
 
     # mantém a mais ANTIGA (menor ID = primeira que existiu); apaga as
@@ -2401,13 +2422,15 @@ _CATEGORIAS_PROTEGIDAS_DELETAR = {CATEGORIA_TICKETS_ID, CATEGORIA_REFERENCIA_GRU
 
 class ViewConfirmarDeletarGrupo(discord.ui.View):
     """Confirmação do `!deletar` — só quem pediu (ou a staff) pode
-    confirmar ou cancelar. Ao confirmar, apaga o(s) canal(is) e a
-    categoria alguns segundos depois (dá tempo de ler a mensagem)."""
+    confirmar ou cancelar. Ao confirmar, apaga o(s) canal(is), a
+    categoria e o cargo do grupo alguns segundos depois (dá tempo de
+    ler a mensagem)."""
 
-    def __init__(self, autor_id: int, categoria: discord.CategoryChannel):
+    def __init__(self, autor_id: int, categoria: discord.CategoryChannel, cargo: discord.Role | None):
         super().__init__(timeout=60)
         self.autor_id = autor_id
         self.categoria = categoria
+        self.cargo = cargo
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.autor_id:
@@ -2445,6 +2468,12 @@ class ViewConfirmarDeletarGrupo(discord.ui.View):
         except discord.HTTPException as e:
             print(f"[renan-grupo] não consegui apagar a categoria '{self.categoria.name}': {e!r}")
 
+        if self.cargo is not None:
+            try:
+                await self.cargo.delete(reason=f"Grupo apagado por {interaction.user}")
+            except discord.HTTPException as e:
+                print(f"[renan-grupo] não consegui apagar o cargo '{self.cargo.name}': {e!r}")
+
     @discord.ui.button(label="❌ Cancelar", style=discord.ButtonStyle.secondary, custom_id="renan_grupo_deletar_cancelar")
     async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
         for item in self.children:
@@ -2456,9 +2485,10 @@ class ViewConfirmarDeletarGrupo(discord.ui.View):
 @bot.command(name="deletar", aliases=["delete", "deletargrupo"])
 async def cmd_deletar_grupo(ctx: commands.Context):
     """Apaga o grupo (categoria + todos os canais dentro dela, incluindo
-    o chat e a call) a partir de QUALQUER canal desse grupo — pede
-    confirmação antes. Uso: dentro do chat (ou de outro canal texto) do
-    grupo, manda `!deletar` (aliases: `!delete`, `!deletargrupo`)."""
+    o chat e a call, + o cargo criado junto com o grupo) a partir de
+    QUALQUER canal desse grupo — pede confirmação antes. Uso: dentro do
+    chat (ou de outro canal texto) do grupo, manda `!deletar` (aliases:
+    `!delete`, `!deletargrupo`)."""
     if ctx.guild is None:
         return
 
@@ -2481,16 +2511,35 @@ async def cmd_deletar_grupo(ctx: commands.Context):
         )
         return
 
+    # O cargo do grupo não fica salvo em disco em nenhum lugar — a forma
+    # confiável de achar ele é olhando os overwrites de permissão da
+    # categoria: na criação (_criar_grupo) só o cargo do grupo (além de
+    # @everyone e do próprio bot) recebe um overwrite ali. Se por acaso
+    # tiver mais de um cargo com overwrite (ex.: alguém editou manualmente
+    # depois), pega o primeiro e avisa que pode ter sobrado mais.
+    cargos_com_overwrite = [
+        alvo for alvo in categoria.overwrites
+        if isinstance(alvo, discord.Role) and alvo != ctx.guild.default_role
+    ]
+    cargo_do_grupo = cargos_com_overwrite[0] if cargos_com_overwrite else None
+
     lista_canais = "\n".join(f"• {c.mention}" for c in categoria.channels) or "— (categoria vazia)"
+    if cargo_do_grupo is not None:
+        linha_cargo = f"\n\nO cargo {cargo_do_grupo.mention} também vai ser apagado."
+        if len(cargos_com_overwrite) > 1:
+            linha_cargo += " (achei mais de um cargo com permissão aqui — só vou apagar esse um; os outros você apaga na mão se precisar.)"
+    else:
+        linha_cargo = "\n\n⚠️ Não achei o cargo desse grupo pra apagar junto — se sobrar algum, apaga na mão."
+
     embed = discord.Embed(
         title="🗑️ Apagar grupo?",
         description=(
             f"Isso vai apagar **para sempre** a categoria **{categoria.name}** e "
-            f"tudo dentro dela:\n\n{lista_canais}\n\nTem certeza?"
+            f"tudo dentro dela:\n\n{lista_canais}{linha_cargo}\n\nTem certeza?"
         ),
         color=0xff4444,
     )
-    await ctx.send(embed=embed, view=ViewConfirmarDeletarGrupo(ctx.author.id, categoria))
+    await ctx.send(embed=embed, view=ViewConfirmarDeletarGrupo(ctx.author.id, categoria, cargo_do_grupo))
 
 
 # ══════════════════════════════════════════════════════════════════
