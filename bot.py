@@ -188,48 +188,66 @@ async def _garantir_canal(canal_id: int):
         return None
 
 
-async def _achar_mensagem_painel(canal, titulo_esperado: str):
-    """Procura, nas últimas mensagens do canal, uma mensagem do próprio
-    bot cujo embed tenha esse título exato — usada como rede de
-    segurança contra duplicação quando o ID salvo em disco se perde."""
+async def _achar_mensagens_painel(canal, titulo_esperado: str) -> list:
+    """Procura, nas últimas mensagens do canal, TODAS as mensagens do
+    próprio bot cujo embed tenha esse título exato — usada tanto pra
+    achar o painel quando o ID salvo em disco se perde, quanto pra
+    limpar duplicatas que já tenham sido criadas (ex.: por restarts
+    anteriores sem essa proteção)."""
+    encontradas = []
     try:
-        async for mensagem in canal.history(limit=50):
+        async for mensagem in canal.history(limit=100):
             if mensagem.author.id != bot.user.id:
                 continue
             if any(embed.title == titulo_esperado for embed in mensagem.embeds):
-                return mensagem
+                encontradas.append(mensagem)
     except discord.HTTPException as e:
         print(f"[renan-painel] não consegui ler o histórico de #{canal}: {e!r}")
-    return None
+    return encontradas
 
 
 async def _publicar_ou_reaproveitar_painel(
     canal, dados: dict, chave_id: str, embed: discord.Embed, view: discord.ui.View
 ):
-    """Fluxo único usado pelos painéis fixos: tenta editar a mensagem
-    salva em disco; se o ID sumiu ou não existe mais, procura no
-    histórico do canal antes de criar uma nova (evita duplicar).
-    Retorna a mensagem final (nova ou reaproveitada) — quem chamar é
-    responsável por salvar `mensagem.id` em `dados[chave_id]`."""
-    mensagem_id = dados.get(chave_id)
+    """Fluxo único usado pelos painéis fixos (tickets, grupos, etc.):
+    reúne a mensagem salva em disco (se ainda existir) + tudo que achar
+    no histórico do canal com o mesmo título de embed, apaga qualquer
+    duplicata sobrando (mantém só a mais recente) e edita essa. Só cria
+    mensagem nova se não sobrar nenhuma candidata. Retorna a mensagem
+    final — quem chamar é responsável por salvar `mensagem.id` em
+    `dados[chave_id]`."""
+    candidatas = {}
 
+    mensagem_id = dados.get(chave_id)
     if mensagem_id:
         try:
             mensagem = await canal.fetch_message(mensagem_id)
-            await mensagem.edit(embed=embed, view=view)
-            return mensagem
+            candidatas[mensagem.id] = mensagem
         except (discord.NotFound, discord.HTTPException):
-            pass  # ID salvo não bate mais com nada — segue pra rede de segurança abaixo
+            pass  # ID salvo não bate mais com nada — sem problema, a busca abaixo cobre isso
 
-    mensagem_existente = await _achar_mensagem_painel(canal, embed.title)
-    if mensagem_existente is not None:
+    for mensagem in await _achar_mensagens_painel(canal, embed.title):
+        candidatas.setdefault(mensagem.id, mensagem)
+
+    if not candidatas:
+        return await canal.send(embed=embed, view=view)
+
+    # mantém a mais ANTIGA (menor ID = primeira que existiu); apaga as
+    # duplicatas mais novas que foram surgindo em restarts sem essa proteção
+    mensagem_principal = min(candidatas.values(), key=lambda m: m.id)
+    for msg_id, mensagem in candidatas.items():
+        if msg_id == mensagem_principal.id:
+            continue
         try:
-            await mensagem_existente.edit(embed=embed, view=view)
-            return mensagem_existente
-        except discord.HTTPException:
-            pass  # mensagem achada mas não deu pra editar — cria uma nova mesmo
+            await mensagem.delete()
+        except discord.HTTPException as e:
+            print(f"[renan-painel] não consegui apagar painel duplicado em #{canal}: {e!r}")
 
-    return await canal.send(embed=embed, view=view)
+    try:
+        await mensagem_principal.edit(embed=embed, view=view)
+        return mensagem_principal
+    except discord.HTTPException:
+        return await canal.send(embed=embed, view=view)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2372,6 +2390,107 @@ async def _configurar_painel_grupo() -> None:
 
     dados["painel_mensagem_id"] = mensagem.id
     _salvar_dados_painel_grupo(dados)
+
+
+# ── Apagar um grupo (comando usado DENTRO do canal do grupo) ──
+# Protegidas contra exclusão acidental por esse comando: categorias que
+# são a espinha dorsal de outros sistemas do bot (tickets e a categoria
+# de referência usada pra posicionar grupos novos).
+_CATEGORIAS_PROTEGIDAS_DELETAR = {CATEGORIA_TICKETS_ID, CATEGORIA_REFERENCIA_GRUPO_ID}
+
+
+class ViewConfirmarDeletarGrupo(discord.ui.View):
+    """Confirmação do `.deletar` — só quem pediu (ou a staff) pode
+    confirmar ou cancelar. Ao confirmar, apaga o(s) canal(is) e a
+    categoria alguns segundos depois (dá tempo de ler a mensagem)."""
+
+    def __init__(self, autor_id: int, categoria: discord.CategoryChannel):
+        super().__init__(timeout=60)
+        self.autor_id = autor_id
+        self.categoria = categoria
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.autor_id:
+            return True
+        if isinstance(interaction.user, discord.Member) and _e_staff(interaction.user):
+            return True
+        await interaction.response.send_message(
+            "Só quem pediu (ou a staff) pode confirmar ou cancelar isso.", ephemeral=True
+        )
+        return False
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
+    @discord.ui.button(label="✅ Confirmar", style=discord.ButtonStyle.danger, custom_id="renan_grupo_deletar_confirmar")
+    async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content="🗑️ Apagando o grupo em instantes...", embed=None, view=self
+        )
+        self.stop()
+
+        await asyncio.sleep(5)
+
+        for canal_filho in list(self.categoria.channels):
+            try:
+                await canal_filho.delete(reason=f"Grupo apagado por {interaction.user}")
+            except discord.HTTPException as e:
+                print(f"[renan-grupo] não consegui apagar o canal '{canal_filho.name}': {e!r}")
+
+        try:
+            await self.categoria.delete(reason=f"Grupo apagado por {interaction.user}")
+        except discord.HTTPException as e:
+            print(f"[renan-grupo] não consegui apagar a categoria '{self.categoria.name}': {e!r}")
+
+    @discord.ui.button(label="❌ Cancelar", style=discord.ButtonStyle.secondary, custom_id="renan_grupo_deletar_cancelar")
+    async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="❌ Cancelado. Nada foi apagado.", embed=None, view=self)
+        self.stop()
+
+
+@bot.command(name="deletar", aliases=["delete", "deletargrupo"])
+async def cmd_deletar_grupo(ctx: commands.Context):
+    """Apaga o grupo (categoria + todos os canais dentro dela, incluindo
+    o chat e a call) a partir de QUALQUER canal desse grupo — pede
+    confirmação antes. Uso: dentro do chat (ou de outro canal texto) do
+    grupo, manda `.deletar` (aliases: `.delete`, `.deletargrupo`)."""
+    if ctx.guild is None:
+        return
+
+    if not _e_staff(ctx.author):
+        await ctx.send("Só a staff pode apagar um grupo.")
+        return
+
+    categoria = ctx.channel.category
+    if categoria is None:
+        await ctx.send(
+            "Esse canal não tá dentro de uma categoria — não dá pra saber qual "
+            "grupo apagar. Usa esse comando dentro do canal do grupo."
+        )
+        return
+
+    if categoria.id in _CATEGORIAS_PROTEGIDAS_DELETAR:
+        await ctx.send(
+            "Essa categoria é usada por outro sistema do bot — não vou apagar "
+            "ela por aqui, mesmo que você tenha certeza."
+        )
+        return
+
+    lista_canais = "\n".join(f"• {c.mention}" for c in categoria.channels) or "— (categoria vazia)"
+    embed = discord.Embed(
+        title="🗑️ Apagar grupo?",
+        description=(
+            f"Isso vai apagar **para sempre** a categoria **{categoria.name}** e "
+            f"tudo dentro dela:\n\n{lista_canais}\n\nTem certeza?"
+        ),
+        color=0xff4444,
+    )
+    await ctx.send(embed=embed, view=ViewConfirmarDeletarGrupo(ctx.author.id, categoria))
 
 
 # ══════════════════════════════════════════════════════════════════
