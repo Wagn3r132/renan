@@ -2643,6 +2643,218 @@ async def cmd_deletar_grupo(ctx: commands.Context):
 
 
 # ══════════════════════════════════════════════════════════════════
+# PAINEL IGNIS — privilégio de quem já tem o cargo de um canal
+# exclusivo (ex.: o canal que alguém ganhou junto com seu próprio
+# cargo de acesso, tipo um privilégio de Booster).
+#
+# Uso: dentro do canal do cargo, manda `!ignis painel`. O Renan
+# descobre qual é "o cargo daquele canal" olhando os overwrites de
+# permissão (mesma lógica do `!deletar`, lá em cima) e, se quem
+# mandou o comando já tiver esse cargo, lança um painel com um botão
+# que abre um select de membros — cada pessoa escolhida recebe o
+# cargo (e, com isso, acesso ao canal) na hora.
+#
+# Esse sistema é separado do painel de "Criar Grupo": aqui o cargo e
+# o canal já existem (criados por fora, na mão) — o Ignis só cuida de
+# deixar quem já tem acesso trazer mais gente, sem precisar de staff.
+# Por isso mesmo não entra em CARGOS_STAFF_IDS nem no cargo geral de
+# Booster (CARGO_IMPULSIONADOR_ID) como candidato: esses são cargos
+# largos, que não pertencem a um canal específico.
+# ══════════════════════════════════════════════════════════════════
+
+def _encontrar_cargo_do_canal(canal: discord.abc.GuildChannel) -> discord.Role | None:
+    """Acha o cargo "dono" de um canal pra fins do painel Ignis: olha
+    os overwrites de permissão do PRÓPRIO canal e, se não achar nada
+    ali, cai pros overwrites da categoria (canal pode não ter overwrite
+    direto e só herdar da categoria). Só considera candidato um cargo
+    que não seja @everyone, não seja gerenciado pelo Discord, não
+    esteja em CARGOS_STAFF_IDS nem seja CARGO_IMPULSIONADOR_ID, e que
+    tenha visualização liberada explicitamente (view_channel=True) ali.
+    Só retorna algo se sobrar exatamente UM candidato — nenhum ou mais
+    de um significa que não dá pra saber com certeza qual é o cargo
+    do canal, então é mais seguro não adivinhar."""
+    guild = canal.guild
+
+    def _candidatos(overwrites: dict) -> list[discord.Role]:
+        return [
+            alvo for alvo, overwrite in overwrites.items()
+            if isinstance(alvo, discord.Role)
+            and alvo.id != guild.default_role.id
+            and not alvo.managed
+            and alvo.id not in CARGOS_STAFF_IDS
+            and alvo.id != CARGO_IMPULSIONADOR_ID
+            and overwrite.view_channel is True
+        ]
+
+    candidatos = _candidatos(canal.overwrites)
+    if not candidatos and getattr(canal, "category", None) is not None:
+        candidatos = _candidatos(canal.category.overwrites)
+
+    return candidatos[0] if len(candidatos) == 1 else None
+
+
+class SelectMembrosIgnis(discord.ui.UserSelect):
+    """Select de membros do painel Ignis — cada pessoa escolhida aqui
+    recebe o cargo do canal onde o painel foi lançado."""
+
+    def __init__(self, cargo: discord.Role):
+        super().__init__(
+            placeholder="Selecione quem vai receber o cargo (pode ser mais de um)",
+            min_values=1,
+            max_values=25,
+        )
+        self.cargo = cargo
+
+    async def callback(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        autor = interaction.user
+        if not isinstance(autor, discord.Member) or self.cargo not in autor.roles:
+            await interaction.response.send_message(
+                f"Só quem já tem o cargo {self.cargo.mention} pode adicionar gente por aqui.",
+                ephemeral=True,
+            )
+            return
+
+        membros = []
+        for valor in self.values:
+            if isinstance(valor, discord.Member):
+                membros.append(valor)
+                continue
+            try:
+                membros.append(await guild.fetch_member(valor.id))
+            except discord.HTTPException:
+                continue  # saiu do servidor ou não achei — ignora essa pessoa
+
+        if not membros:
+            await interaction.response.send_message(
+                "Não consegui validar ninguém dessa seleção. Tenta de novo.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        adicionados, ja_tinham, falhas = [], [], []
+        for membro in membros:
+            if self.cargo in membro.roles:
+                ja_tinham.append(membro.mention)
+                continue
+            try:
+                await membro.add_roles(
+                    self.cargo, reason=f"Adicionado via painel Ignis por {interaction.user}"
+                )
+                adicionados.append(membro.mention)
+            except discord.Forbidden:
+                falhas.append(membro.mention)
+
+        partes = []
+        if adicionados:
+            partes.append(f"✅ Recebeu o cargo agora: {', '.join(adicionados)}")
+        if ja_tinham:
+            partes.append(f"ℹ️ Já tinha o cargo: {', '.join(ja_tinham)}")
+        if falhas:
+            partes.append(f"⚠️ Sem permissão pra dar o cargo pra: {', '.join(falhas)}")
+
+        await interaction.followup.send(
+            "\n".join(partes) if partes else "Nada pra fazer aqui.", ephemeral=True
+        )
+
+
+class ViewSelecionarMembrosIgnis(discord.ui.View):
+    """View efêmera que carrega o select de membros do painel Ignis —
+    não precisa sobreviver a restart, é só da interação."""
+
+    def __init__(self, cargo: discord.Role):
+        super().__init__(timeout=300)
+        self.add_item(SelectMembrosIgnis(cargo))
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
+
+class PainelIgnis(discord.ui.View):
+    """Painel lançado pelo `!ignis painel` — só o botão que abre o
+    select de membros. Não é persistente (custom_id fixo/timeout=None)
+    porque é gerado na hora, a cada uso do comando, e não fica fixado
+    em canal nenhum como os outros painéis do bot."""
+
+    def __init__(self, cargo: discord.Role):
+        super().__init__(timeout=600)
+        self.cargo = cargo
+
+    @discord.ui.button(label="Adicionar Pessoa", emoji="🔥", style=discord.ButtonStyle.primary)
+    async def adicionar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        autor = interaction.user
+        if not isinstance(autor, discord.Member) or self.cargo not in autor.roles:
+            await interaction.response.send_message(
+                f"Só quem já tem o cargo {self.cargo.mention} pode usar esse painel.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            "Seleciona quem você quer trazer pra cá:",
+            view=ViewSelecionarMembrosIgnis(self.cargo),
+            ephemeral=True,
+        )
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
+
+@bot.group(name="ignis", invoke_without_command=True)
+async def ignis(ctx: commands.Context):
+    if ctx.guild is None:
+        return
+    await ctx.send("Faltou o subcomando. Use `!ignis painel` dentro do canal do seu cargo.")
+
+
+@ignis.command(name="painel")
+async def ignis_painel(ctx: commands.Context):
+    """Lança o painel Ignis pra adicionar gente ao cargo do canal
+    atual. Só funciona dentro do canal de um cargo exclusivo, e só
+    pra quem já tem esse cargo — ver _encontrar_cargo_do_canal."""
+    if ctx.guild is None:
+        return
+
+    canal = ctx.channel
+    if not isinstance(canal, (discord.TextChannel, discord.VoiceChannel)):
+        await ctx.send("Esse comando só funciona dentro de um canal de texto ou voz do servidor.")
+        return
+
+    cargo = _encontrar_cargo_do_canal(canal)
+    if cargo is None:
+        await ctx.send(
+            "Não consegui identificar um cargo exclusivo vinculado a este canal — "
+            "o `!ignis painel` só funciona dentro do canal de um cargo específico."
+        )
+        return
+
+    autor = ctx.author
+    if not isinstance(autor, discord.Member) or cargo not in autor.roles:
+        await ctx.send(f"Só quem já tem o cargo {cargo.mention} pode usar o painel aqui.")
+        return
+
+    embed = discord.Embed(
+        title="🔥 Painel Ignis",
+        description=(
+            f"Traga mais gente pra cá: clique no botão abaixo e escolha quem "
+            f"vai receber o cargo {cargo.mention} (e o acesso a este canal)."
+        ),
+        color=COR_RENAN,
+    )
+    embed.set_footer(text="👽 Renan está observando.")
+
+    try:
+        await ctx.send(embed=embed, view=PainelIgnis(cargo))
+    except discord.Forbidden:
+        pass
+
+
+# ══════════════════════════════════════════════════════════════════
 # PAINEL DE LANÇAR CONVITE (recrutamento por cargo de interesse)
 #
 # Painel fixo (embed + botão "📨 Lançar Convite") em
