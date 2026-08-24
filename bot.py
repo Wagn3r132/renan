@@ -175,6 +175,19 @@ IMAGEM_MISSOES_ORBS = (
     "?ex=6a7fe810&is=6a7e9690&hm=f0dacb565448a33ed0910278446852455d65fdff4eac4aa8b84a48047948c7db"
 )
 
+# ── Divulgação de itens/serviços (pra clãs e comunidades) ──
+# Funciona parecido com o canal de sugestões: qualquer mensagem mandada em
+# CANAL_DIVULGACAO_ITENS_ID (texto e/ou imagem) vira um embed formatado —
+# a mensagem original é apagada e substituída. Diferente das sugestões,
+# não tem votação; em vez disso, junto do embed aparece um menu nativo
+# com os cargos do servidor (discord.ui.RoleSelect) pra quem divulgou
+# escolher qual cargo marcar — não precisa configurar um cargo fixo aqui,
+# pode ser qualquer cargo do servidor, escolhido na hora. Se mandar mais
+# de uma imagem junto, a primeira vira a imagem principal do embed e as
+# demais entram em embeds extras (só com a foto), pra aparecerem juntas
+# na mesma mensagem.
+CANAL_DIVULGACAO_ITENS_ID = 1541524197526741072
+
 
 # ══════════════════════════════════════════════════════════════════════
 # UTILITÁRIOS DE PAINÉIS FIXOS
@@ -3940,6 +3953,122 @@ async def _processar_sugestao(message: discord.Message) -> None:
         "criado_em": time.time(),
     }
     _salvar_dados_sugestoes(dados)
+
+
+# ══════════════════════════════════════════════════════════════════
+# DIVULGAÇÃO DE ITENS/SERVIÇOS
+#
+# No canal CANAL_DIVULGACAO_ITENS_ID, qualquer mensagem (texto e/ou
+# imagem) vira um embed formatado — igual ao que acontece no canal de
+# sugestões: a mensagem original é apagada e substituída. Aqui não tem
+# botão de voto; em vez disso, junto do embed aparece um menu nativo
+# (discord.ui.RoleSelect) com os cargos do servidor, pra quem divulgou
+# escolher qual marcar — pode ser qualquer cargo, escolhido na hora,
+# não precisa configurar nada fixo.
+# ══════════════════════════════════════════════════════════════════
+
+class _SelectCargoDivulgacaoItem(discord.ui.RoleSelect):
+    """Menu nativo de cargos do servidor (o próprio Discord já preenche
+    a lista — não precisa buscar cargo por cargo aqui)."""
+
+    def __init__(self):
+        super().__init__(placeholder="Marcar qual cargo?", min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        cargo = self.values[0]
+        await interaction.response.edit_message(
+            content=cargo.mention,
+            view=None,
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
+
+
+class _ViewEscolherCargoDivulgacao(discord.ui.View):
+    """Aparece junto com o embed de divulgação, logo depois que o item é
+    postado. Só quem divulgou o item pode escolher o cargo; se ninguém
+    escolher em 5 minutos, o menu é desativado e o item fica sem marcar
+    ninguém (o embed em si continua no ar normalmente)."""
+
+    def __init__(self, autor_id: int):
+        super().__init__(timeout=300)
+        self.autor_id = autor_id
+        self.message: discord.Message | None = None
+        self.add_item(_SelectCargoDivulgacaoItem())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message(
+                "Só quem divulgou esse item pode escolher o cargo.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+
+async def _processar_divulgacao_item(message: discord.Message) -> None:
+    if message.guild is None or message.channel.id != CANAL_DIVULGACAO_ITENS_ID:
+        return
+
+    texto = message.content.strip()
+    anexos_imagem = [
+        a for a in message.attachments
+        if a.content_type and a.content_type.startswith("image/")
+    ]
+    if not texto and not anexos_imagem:
+        return  # nada pra divulgar
+
+    # Baixa as imagens ANTES de apagar a mensagem original — pelo mesmo
+    # motivo do sistema de sugestões: se a gente só reaproveitasse a URL
+    # do anexo, ela podia parar de funcionar assim que a mensagem original
+    # (dona do anexo) fosse deletada.
+    arquivos_imagem = []
+    for anexo in anexos_imagem:
+        try:
+            arquivos_imagem.append(await anexo.to_file())
+        except discord.HTTPException:
+            continue
+
+    embed_principal = discord.Embed(
+        title="🛠️ Novo serviço divulgado!",
+        description=texto or "*(sem descrição — só imagem)*",
+        color=COR_RENAN,
+    )
+    embed_principal.set_thumbnail(url=message.author.display_avatar.url)
+    embed_principal.add_field(name="Feito por", value=message.author.mention, inline=False)
+    embed_principal.set_footer(text="Serviço concluído • escolha um cargo pra marcar abaixo")
+    embed_principal.timestamp = message.created_at
+
+    embeds = [embed_principal]
+    if arquivos_imagem:
+        embed_principal.set_image(url=f"attachment://{arquivos_imagem[0].filename}")
+        # Imagens extras (2ª em diante) entram em embeds próprios, só com a
+        # foto — truque pra Discord mostrar várias imagens juntas na mesma
+        # mensagem, já que cada embed só aceita 1 imagem principal.
+        for arquivo_extra in arquivos_imagem[1:]:
+            embed_extra = discord.Embed(color=COR_RENAN)
+            embed_extra.set_image(url=f"attachment://{arquivo_extra.filename}")
+            embeds.append(embed_extra)
+
+    try:
+        await message.delete()
+    except discord.HTTPException:
+        pass
+
+    view = _ViewEscolherCargoDivulgacao(message.author.id)
+
+    try:
+        nova_mensagem = await message.channel.send(embeds=embeds, files=arquivos_imagem, view=view)
+        view.message = nova_mensagem
+    except discord.HTTPException as e:
+        print(f"[renan-divulgacao] erro ao enviar divulgação de item: {e!r}")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -12580,6 +12709,13 @@ async def on_message(message: discord.Message):
         await _processar_sugestao(message)
     except Exception as e:
         print(f"[renan-sugestoes] erro ao processar sugestão de {message.author}: {e!r}")
+
+    # Divulgação de itens/serviços — canal dedicado, mensagem (texto e/ou
+    # imagem) vira embed formatado + marca o cargo avisando que foi feito
+    try:
+        await _processar_divulgacao_item(message)
+    except Exception as e:
+        print(f"[renan-divulgacao] erro ao processar divulgação de item de {message.author}: {e!r}")
 
     # Personalidade — respostas curtas e frias a gatilhos de conversa
     await _checar_personalidade(message)
