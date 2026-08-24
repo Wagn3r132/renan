@@ -105,6 +105,22 @@ CARGOS_STAFF_IDS = [    # cargos que enxergam e atendem os tickets abertos
 CANAL_REGISTRO_MEMBRO_ID = 1501260059701805061
 CARGO_REGISTRO_APROVADO_ID = 1541575317674795119
 
+# Canal onde entra a mensagem de boas-vindas "dos bão" pra quem acabou de
+# ser LIBERADO — seja pelo botão ✅ Sim da pergunta de registro (ver
+# _responder_registro_membro) ou pelo comando manual !liberar (ver
+# cmd_liberar, mais abaixo). Sempre com a imagem fixa em IMAGEM_LIBERADOS.
+CANAL_LIBERADOS_ID = 1501260061530390563
+
+# Imagem usada na mensagem de boas-vindas de quem foi liberado. É um link
+# assinado do CDN do Discord (parâmetros ex/is/hm) — assim como os outros
+# IMAGEM_* deste arquivo, ele expira com o tempo e precisa ser trocado por
+# um link novo (ou por um arquivo local) quando isso acontecer.
+IMAGEM_LIBERADOS = (
+    "https://cdn.discordapp.com/attachments/926913851172204577/"
+    "1541574886713991288/file_0000000017f0820ea21694aeed8ff7b1.png"
+    "?ex=6a8e16fe&is=6a8cc57e&hm=c115c645184a8e9f90133bce2dc4b67ebacd88ea28cd71d88691d16118e4e300"
+)
+
 # Esse aqui é diferente: cargo dado automaticamente pra QUALQUER pessoa
 # assim que entra no servidor, sem depender de aprovação nenhuma da
 # staff (ver on_member_join, mais abaixo).
@@ -403,6 +419,17 @@ FRASES_IMPULSO = [
     "🔥 Mais um impulso na realidade. {mention} fez isso acontecer.\nEu registro. Sempre registro.",
     "💎 {mention} impulsionou o servidor — e algo em mim, frio como sou, reconhece o gesto.",
     "⚡ As correntes brilharam mais forte. {mention} impulsionou.\nIsso não passa despercebido, nem por mim.",
+]
+
+# Frases da mensagem de LIBERADO ("dos bão") — dispara quando alguém é
+# liberado (botão ✅ Sim da pergunta de registro, ou comando !liberar).
+# {mention} vira a menção de quem foi liberado.
+FRASES_LIBERADOS = [
+    "🔓 As correntes se abriram pra {mention}.\nAgora você está entre os que ficaram — dos bão mesmo. Seja bem-vindo(a) de verdade.",
+    "🩸 {mention} foi liberado(a).\nPassou pelo crivo, atravessou a desconfiança. Agora faz parte disso — dos bão.",
+    "⛓️ A barreira caiu pra {mention}.\nEu não confio fácil, mas essa confiança acabou de ser conquistada. Dos bão, a partir de agora.",
+    "💎 {mention} entrou pro círculo.\nNem todo sinal de vida chega até aqui. Esse chegou — e é dos bão.",
+    "🔥 Liberado(a): {mention}.\nVocê não é mais só mais um sinal na escuridão. Agora é dos nossos.",
 ]
 
 _COOLDOWN_SEGUNDOS = 15
@@ -2285,6 +2312,36 @@ def _embed_registro_membro(
     return embed
 
 
+async def _enviar_boas_vindas_liberado(member: discord.Member) -> None:
+    """Dispara toda vez que um membro é LIBERADO — seja pelo botão ✅ Sim
+    da pergunta de registro (_responder_registro_membro) ou pelo comando
+    manual !liberar (cmd_liberar, mais abaixo). Manda a mensagem de
+    boas-vindas "dos bão" em CANAL_LIBERADOS_ID, sempre com a imagem fixa
+    de IMAGEM_LIBERADOS."""
+    if not CANAL_LIBERADOS_ID:
+        return
+    canal = await _garantir_canal(CANAL_LIBERADOS_ID)
+    if canal is None:
+        print(f"[renan-liberados] canal {CANAL_LIBERADOS_ID} não encontrado — não avisei sobre {member}.")
+        return
+
+    texto = random.choice(FRASES_LIBERADOS).format(mention=member.mention)
+    embed = discord.Embed(
+        title="🔓 Liberado(a)",
+        description=texto,
+        color=COR_RENAN,
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    if IMAGEM_LIBERADOS:
+        embed.set_image(url=IMAGEM_LIBERADOS)
+    embed.set_footer(text="👽 Renan  •  agora é dos bão")
+
+    try:
+        await canal.send(embed=embed)
+    except discord.HTTPException as e:
+        print(f"[renan-liberados] erro ao mandar boas-vindas de liberado pra {member}: {e!r}")
+
+
 async def _responder_registro_membro(interaction: discord.Interaction, reg_id: str, resposta: str) -> None:
     """Roda quando a staff clica em Sim/Não na pergunta de registro de
     algum membro. resposta é 'sim' ou 'nao'."""
@@ -2355,6 +2412,12 @@ async def _responder_registro_membro(interaction: discord.Interaction, reg_id: s
 
     if aviso_erro:
         await interaction.followup.send(aviso_erro, ephemeral=True)
+
+    if membro is not None and resposta == "sim":
+        try:
+            await _enviar_boas_vindas_liberado(membro)
+        except Exception as e:
+            print(f"[renan-liberados] erro inesperado ao mandar boas-vindas de liberado pra {membro}: {e!r}")
 
 
 class _ViewRegistrarMembro(discord.ui.View):
@@ -2433,6 +2496,62 @@ async def _perguntar_registro_membro(member: discord.Member) -> None:
         "criado_em": time.time(),
     }
     _salvar_dados_registro_membro(dados)
+
+
+@bot.command(name="liberar")
+async def cmd_liberar(ctx: commands.Context, membro_id: int = None):
+    """Libera manualmente uma pessoa, sem precisar passar pelo botão ✅ Sim
+    da pergunta de registro: dá CARGO_REGISTRO_APROVADO_ID (se ainda não
+    tiver) e manda a mesma mensagem de boas-vindas "dos bão" (com a imagem
+    fixa) em CANAL_LIBERADOS_ID. Uso: `!liberar <ID ou @membro>` — só a
+    staff (CARGOS_STAFF_IDS) pode usar."""
+    if ctx.guild is None:
+        return
+
+    if not _e_staff(ctx.author):
+        await ctx.send("Só a staff pode liberar alguém.")
+        return
+
+    if membro_id is None and ctx.message.mentions:
+        membro_id = ctx.message.mentions[0].id
+    if membro_id is None:
+        aviso = await ctx.send("⚠️ Uso: `!liberar <ID ou @membro>`")
+        await _apagar_mensagem_depois(aviso, 15)
+        return
+
+    membro = ctx.guild.get_member(membro_id)
+    if membro is None:
+        try:
+            membro = await ctx.guild.fetch_member(membro_id)
+        except discord.HTTPException:
+            aviso = await ctx.send("Não achei essa pessoa no servidor.")
+            await _apagar_mensagem_depois(aviso, 15)
+            return
+
+    aviso_erro = None
+    cargo = ctx.guild.get_role(CARGO_REGISTRO_APROVADO_ID)
+    if cargo is None:
+        aviso_erro = "não achei o cargo de registro configurado — fala com quem mantém o bot."
+        print(
+            f"[renan-registro] cargo de registro {CARGO_REGISTRO_APROVADO_ID} não "
+            f"encontrado em {ctx.guild.name}."
+        )
+    elif cargo not in membro.roles:
+        try:
+            await membro.add_roles(cargo, reason=f"Liberado manualmente por {ctx.author}")
+        except discord.Forbidden:
+            aviso_erro = "não tenho permissão pra dar o cargo. Confere minha posição no servidor."
+        except discord.HTTPException as e:
+            aviso_erro = "deu um erro ao tentar dar o cargo."
+            print(f"[renan-registro] erro ao dar cargo de registro pra {membro}: {e!r}")
+
+    await _enviar_boas_vindas_liberado(membro)
+
+    if aviso_erro:
+        await ctx.send(f"🔓 Liberei {membro.mention} e mandei as boas-vindas, mas {aviso_erro}")
+    else:
+        confirmacao = await ctx.send(f"🔓 {membro.mention} foi liberado(a).")
+        await _apagar_mensagem_depois(confirmacao, 15)
 
 
 # ══════════════════════════════════════════════════════════════════
