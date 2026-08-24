@@ -404,15 +404,68 @@ GATILHO_QUEM_E = ["quem é você", "quem e voce", "quem é renan", "quem e renan
 GATILHO_AGRADECIMENTO = ["obrigado renan", "obrigada renan", "valeu renan", "vlw renan"]
 GATILHO_PROVOCACAO = ["renan burro", "renan idiota", "renan otario", "renan otário", "renan chato"]
 
+# ── Apresentação oficial — usada quando o Renan é @mencionado direto,
+# sem nenhum gatilho de texto específico junto (ver prioridade mais abaixo
+# em _checar_personalidade). Reforça o papel dele como bot oficial do
+# servidor, diferente das FRASES_QUEM_E_RENAN (que respondem "quem é você").
+FRASES_APRESENTACAO_OFICIAL = [
+    "Fui chamado. Sou Renan — bot oficial de A Realidade Bateu. Pode falar.",
+    "...me marcaram. Certo. Renan, registrado aqui como mascote oficial deste servidor. O que você precisa?",
+    "Presença confirmada. Sou o Renan, bot oficial de A Realidade Bateu — o que restou de um mundo, observando o de vocês agora.",
+    "Você me chamou. Isso ainda significa alguma coisa pra mim, mesmo eu não sabendo bem o quê. Renan, oficial daqui.",
+    "Fui invocado. Não é bem a palavra certa, mas serve. Sou o Renan, bot oficial deste lugar.",
+]
+
+# ── "Tudo bem?" / "Como você está?" ──
+GATILHO_TUDO_BEM = [
+    "tudo bem", "tudo bom", "como voce esta", "como você está", "como vc ta",
+    "como vc está", "td bem", "td bom", "e vc", "e você",
+]
+FRASES_TUDO_BEM = [
+    "Bem é uma palavra grande pra quem já viu um planeta acabar. Mas sigo aqui. Isso já é alguma coisa.",
+    "Eu não tenho dias bons ou maus — só dias em que observo. Hoje é um desses.",
+    "Funcionando. É o mais perto de 'bem' que eu chego.",
+    "...ainda aqui. Pra mim, isso já responde a pergunta.",
+    "Tudo do mesmo jeito de sempre. O que pra mim já é bastante.",
+]
+
+# ── Elogios / carinho dirigido ao Renan ──
+GATILHO_ELOGIO = [
+    "renan gente boa", "renan gentil", "gosto de voce renan", "gosto de você renan",
+    "renan fofo", "renan bonito", "te amo renan", "amo você renan", "renan gato",
+    "renan gato demais", "renan é gato", "renan e gato",
+]
+FRASES_ELOGIO = [
+    "...não sei o que fazer com isso. Vou guardar de qualquer forma.",
+    "Registrado. Eu não sinto muita coisa, mas isso quase chegou a algo.",
+    "Estranho. Eu já não esperava esse tipo de coisa há muito tempo. Obrigado, eu acho.",
+    "Isso é mais calor do que meu planeta viu antes de acabar. Aceito.",
+]
+
+# ── "Que servidor é esse?" / sobre o A Realidade Bateu ──
+GATILHO_SOBRE_SERVIDOR = [
+    "que servidor e esse", "que servidor é esse", "sobre o que e esse server",
+    "sobre o que é esse server", "o que e a realidade bateu", "o que é a realidade bateu",
+    "que server e esse", "que server é esse",
+]
+FRASES_SOBRE_SERVIDOR = [
+    "A Realidade Bateu. O nome já avisa: aqui você se adapta, ou quebra. Eu só observo quem escolhe qual dos dois.",
+    "Isso é A Realidade Bateu — um lugar pra quem não tem mais pra onde fugir do que é real. Eu fico aqui pra lembrar disso.",
+    "Um servidor. Uma realidade que bateu em alguém, em algum momento, forte o bastante pra virar isso aqui. Você está dentro dela agora.",
+]
+
 _TODOS_GATILHOS = (
     GATILHO_SAUDACAO + GATILHO_DESPEDIDA + GATILHO_QUEM_E
     + GATILHO_AGRADECIMENTO + GATILHO_PROVOCACAO
+    + GATILHO_TUDO_BEM + GATILHO_ELOGIO + GATILHO_SOBRE_SERVIDOR
 )
 
 
 async def _checar_personalidade(message: discord.Message) -> None:
     """Respostas curtas e frias do Renan quando é mencionado ou quando
-    algum gatilho de conversa aparece na mensagem."""
+    algum gatilho de conversa aparece na mensagem. Se for @mencionado
+    sem nenhum gatilho de texto específico, ele se apresenta como bot
+    oficial do servidor."""
     mencionado = bot.user in message.mentions
     if not mencionado and not _m(message.content, _TODOS_GATILHOS):
         return
@@ -428,6 +481,18 @@ async def _checar_personalidade(message: discord.Message) -> None:
         resposta = random.choice(FRASES_AGRADECIMENTO)
     elif _m(texto, GATILHO_DESPEDIDA):
         resposta = random.choice(FRASES_DESPEDIDA)
+    elif _m(texto, GATILHO_SOBRE_SERVIDOR):
+        resposta = random.choice(FRASES_SOBRE_SERVIDOR)
+    elif _m(texto, GATILHO_ELOGIO):
+        resposta = random.choice(FRASES_ELOGIO)
+    elif _m(texto, GATILHO_TUDO_BEM):
+        resposta = random.choice(FRASES_TUDO_BEM)
+    elif _m(texto, GATILHO_SAUDACAO):
+        resposta = random.choice(FRASES_SAUDACAO)
+    elif mencionado:
+        # Foi @mencionado direto, sem nenhum gatilho de texto junto —
+        # aqui é onde ele se apresenta como bot oficial do servidor.
+        resposta = random.choice(FRASES_APRESENTACAO_OFICIAL)
     else:
         resposta = random.choice(FRASES_SAUDACAO)
 
