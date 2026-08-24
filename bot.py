@@ -101,6 +101,20 @@ CARGOS_STAFF_IDS = [    # cargos que enxergam e atendem os tickets abertos
 CANAL_PAINEL_GRUPO_ID = 1539085642397384755      # canal onde fica fixado o painel com o botão "Criar Grupo"
 CATEGORIA_REFERENCIA_GRUPO_ID = 1501260062801530902  # a nova categoria do grupo nasce logo abaixo desta
 
+# ── Painel de lançar convite (recrutamento, marca 1 cargo de interesse) ──
+# Não confundir com o sistema de rastreio de convites de servidor (mais
+# abaixo, perto de _atualizar_cache_convites) — isso aqui é outra coisa:
+# um painel pra alguém chamar gente pra algo (evento, partida, etc.)
+# marcando um cargo de interesse.
+CANAL_PAINEL_LANCAR_CONVITE_ID = 1541497318702977064    # canal onde fica fixado o painel com o botão "Lançar Convite"
+CANAL_DESTINO_LANCAR_CONVITE_ID = 1541498488511135744   # canal onde a mensagem do convite é publicada
+CARGOS_INTERESSE_LANCAR_CONVITE_IDS = [   # cargos que dá pra marcar (1 por convite) — quem tiver o cargo fica sabendo
+    1540507051858595910,
+    1540490377042329760,
+    1539416884817174548,
+    1539072704982941766,
+]
+
 # Imagem usada no embed de boas-vindas (banner grande, junto com o texto)
 IMAGEM_BOAS_VINDAS = (
     "https://cdn.discordapp.com/attachments/926913851172204577/"
@@ -128,6 +142,10 @@ IMAGEM_GRUPO = (
     "1539092615377461259/ChatGPT_Image_17_de_ago._de_2026_23_04_21.png"
     "?ex=6a850f32&is=6a83bdb2&hm=0b5e19a2b6509d44912a3f3c45e6224a862d3eee630a4841628933ebbd9142ee"
 )
+
+# Imagem usada no painel de lançar convite (opcional — troque pela sua,
+# ou deixe None que o embed sai sem imagem)
+IMAGEM_LANCAR_CONVITE = None
 
 # Imagem usada nas instruções de como deixar feedback do atendimento
 IMAGEM_FEEDBACK = (
@@ -2540,6 +2558,243 @@ async def cmd_deletar_grupo(ctx: commands.Context):
         color=0xff4444,
     )
     await ctx.send(embed=embed, view=ViewConfirmarDeletarGrupo(ctx.author.id, categoria, cargo_do_grupo))
+
+
+# ══════════════════════════════════════════════════════════════════
+# PAINEL DE LANÇAR CONVITE (recrutamento por cargo de interesse)
+#
+# Painel fixo (embed + botão "📨 Lançar Convite") em
+# CANAL_PAINEL_LANCAR_CONVITE_ID. Quem clicar preenche uma ficha (modal)
+# com o título e os detalhes do que está chamando gente pra fazer, e
+# depois escolhe UM cargo de interesse (dentre
+# CARGOS_INTERESSE_LANCAR_CONVITE_IDS) pra marcar — é assim que quem tem
+# aquele cargo fica sabendo do convite. A mensagem final (embed, com a
+# marcação do cargo escolhido) sai publicada em
+# CANAL_DESTINO_LANCAR_CONVITE_ID.
+#
+# O painel em si é uma view persistente (custom_id fixo, sobrevive a
+# restart, igual aos painéis de ticket e de grupo). O select de cargo
+# é só da interação (não precisa sobreviver restart).
+# ══════════════════════════════════════════════════════════════════
+
+_LANCAR_CONVITE_DATA_PATH = os.getenv("LANCAR_CONVITE_DATA_PATH", "/data/lancar_convite_painel.json")
+
+
+def _carregar_dados_painel_lancar_convite() -> dict:
+    try:
+        with open(_LANCAR_CONVITE_DATA_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _salvar_dados_painel_lancar_convite(dados: dict) -> None:
+    try:
+        pasta = os.path.dirname(_LANCAR_CONVITE_DATA_PATH)
+        if pasta:
+            os.makedirs(pasta, exist_ok=True)
+        with open(_LANCAR_CONVITE_DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        print(f"[renan-convite] não consegui salvar {_LANCAR_CONVITE_DATA_PATH}: {e!r}")
+
+
+class SelectCargoLancarConvite(discord.ui.Select):
+    """Select (fora do modal — modal não suporta esse tipo de campo)
+    com os cargos de interesse configurados — marca só UM por convite."""
+
+    def __init__(self, guild: discord.Guild, ficha: dict):
+        options = []
+        for cargo_id in CARGOS_INTERESSE_LANCAR_CONVITE_IDS:
+            cargo = guild.get_role(cargo_id)
+            if cargo is None:
+                continue
+            options.append(discord.SelectOption(label=cargo.name[:100], value=str(cargo.id)))
+
+        super().__init__(
+            placeholder="Selecione o cargo de interesse a marcar",
+            min_values=1,
+            max_values=1,
+            options=options or [discord.SelectOption(label="(nenhum cargo encontrado)", value="0")],
+            disabled=not options,
+        )
+        self.ficha = ficha
+
+    async def callback(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        cargo = guild.get_role(int(self.values[0]))
+        if cargo is None:
+            await interaction.response.send_message(
+                "Não achei mais esse cargo no servidor. Tenta abrir o convite de novo.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await _publicar_convite(interaction, self.ficha, cargo)
+
+
+class ViewSelecionarCargoLancarConvite(discord.ui.View):
+    """View efêmera (não precisa sobreviver restart) que carrega o
+    select de cargo logo depois que a ficha do modal é enviada."""
+
+    def __init__(self, guild: discord.Guild, ficha: dict):
+        super().__init__(timeout=300)
+        select = SelectCargoLancarConvite(guild, ficha)
+        self.tem_opcoes = not select.disabled
+        self.add_item(select)
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
+
+class ModalLancarConvite(discord.ui.Modal, title="Lançar Convite"):
+    """Ficha preenchida por quem clica em '📨 Lançar Convite' no painel."""
+
+    titulo_convite = discord.ui.TextInput(
+        label="Do que se trata",
+        placeholder="Ex.: Procurando gente pra ranked, evento X, etc.",
+        max_length=100,
+        required=True,
+    )
+    detalhes_convite = discord.ui.TextInput(
+        label="Detalhes",
+        placeholder="Conta mais: horário, quantas vagas, requisitos...",
+        style=discord.TextStyle.paragraph,
+        max_length=800,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        ficha = {
+            "titulo": str(self.titulo_convite).strip(),
+            "detalhes": str(self.detalhes_convite).strip(),
+        }
+
+        view = ViewSelecionarCargoLancarConvite(guild, ficha)
+        if not view.tem_opcoes:
+            await interaction.response.send_message(
+                "Nenhum dos cargos de interesse configurados foi encontrado nesse "
+                "servidor. Fala com a staff pra checar `CARGOS_INTERESSE_LANCAR_CONVITE_IDS`.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            f"Ficha recebida pro convite **{ficha['titulo']}**. Agora escolhe "
+            "qual cargo de interesse vai ser marcado:",
+            view=view,
+            ephemeral=True,
+        )
+
+
+class PainelLancarConvite(discord.ui.View):
+    """View fixa do painel de lançar convite — só o botão que abre a
+    ficha (modal)."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Lançar Convite",
+        emoji="📨",
+        style=discord.ButtonStyle.primary,
+        custom_id="renan_lancar_convite_abrir",
+    )
+    async def lancar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModalLancarConvite())
+
+
+async def _publicar_convite(
+    interaction: discord.Interaction, ficha: dict, cargo: discord.Role
+) -> None:
+    """Roda depois que a ficha (modal) + o cargo de interesse (select)
+    estão completos: publica o convite em CANAL_DESTINO_LANCAR_CONVITE_ID,
+    marcando o cargo escolhido."""
+    canal_destino = await _garantir_canal(CANAL_DESTINO_LANCAR_CONVITE_ID)
+    if canal_destino is None:
+        await interaction.followup.send(
+            "Não consegui achar o canal de destino do convite. Fala com a staff.",
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(
+        title=f"📨 {ficha['titulo']}",
+        description=ficha["detalhes"],
+        color=COR_RENAN,
+    )
+    embed.set_author(name=str(interaction.user), icon_url=interaction.user.display_avatar.url)
+    embed.add_field(name="Quem lançou", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Interessados", value=cargo.mention, inline=True)
+    embed.set_footer(text="👽 Renan  •  painel de convites")
+
+    try:
+        mensagem = await canal_destino.send(content=cargo.mention, embed=embed)
+    except discord.Forbidden:
+        await interaction.followup.send(
+            f"Sem permissão pra mandar mensagem em {canal_destino.mention}. Fala com a staff.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException as e:
+        await interaction.followup.send(
+            "Deu um erro ao publicar o convite. Tenta de novo.", ephemeral=True
+        )
+        print(f"[renan-convite] erro ao publicar convite em #{canal_destino}: {e!r}")
+        return
+
+    await interaction.followup.send(
+        f"Convite publicado em {canal_destino.mention}: {mensagem.jump_url}",
+        ephemeral=True,
+    )
+
+
+async def _configurar_painel_lancar_convite() -> None:
+    """Roda quando o bot conecta: publica ou atualiza o painel fixo de
+    lançar convites no canal configurado."""
+    if not CANAL_PAINEL_LANCAR_CONVITE_ID:
+        print("[renan-convite] CANAL_PAINEL_LANCAR_CONVITE_ID não configurado — pulei o painel de convites.")
+        return
+
+    canal = await _garantir_canal(CANAL_PAINEL_LANCAR_CONVITE_ID)
+    if canal is None:
+        print(f"[renan-convite] canal {CANAL_PAINEL_LANCAR_CONVITE_ID} não encontrado — pulei o painel de convites.")
+        return
+
+    embed = discord.Embed(
+        title="📨 Lançar Convite",
+        description=(
+            "Clica no botão abaixo e preenche a ficha: do que se trata e os "
+            "detalhes (horário, vagas, requisitos etc.).\n\n"
+            "Depois de enviar a ficha, você escolhe qual cargo de interesse "
+            f"marcar — o convite sai publicado em <#{CANAL_DESTINO_LANCAR_CONVITE_ID}>."
+        ),
+        color=COR_RENAN,
+    )
+    if IMAGEM_LANCAR_CONVITE:
+        embed.set_image(url=IMAGEM_LANCAR_CONVITE)
+    embed.set_footer(text="👽 Renan está observando.")
+
+    dados = _carregar_dados_painel_lancar_convite()
+    try:
+        mensagem = await _publicar_ou_reaproveitar_painel(
+            canal, dados, "painel_mensagem_id", embed, PainelLancarConvite()
+        )
+    except discord.Forbidden:
+        print(f"[renan-convite] sem permissão pra enviar/editar mensagem em #{canal.name}.")
+        return
+
+    dados["painel_mensagem_id"] = mensagem.id
+    _salvar_dados_painel_lancar_convite(dados)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -11844,6 +12099,15 @@ async def cmd_ajuda(ctx):
         inline=False,
     )
     embed.add_field(
+        name="📨 Lançar Convite",
+        value=(
+            f"Painel em <#{CANAL_PAINEL_LANCAR_CONVITE_ID}> — clique, preencha a "
+            "ficha e escolha o cargo de interesse a marcar. Sai publicado em "
+            f"<#{CANAL_DESTINO_LANCAR_CONVITE_ID}>."
+        ),
+        inline=False,
+    )
+    embed.add_field(
         name="👽 Sobre",
         value="`!sobre` — quem eu sou, se você não sabia",
         inline=False,
@@ -11895,6 +12159,11 @@ async def on_ready():
             await _configurar_painel_grupo()
         except Exception as e:
             print(f"[renan-grupo] erro ao configurar painel de grupos: {e!r}")
+        try:
+            bot.add_view(PainelLancarConvite())   # registra o botão como persistente (sobrevive a restart)
+            await _configurar_painel_lancar_convite()
+        except Exception as e:
+            print(f"[renan-convite] erro ao configurar painel de convites: {e!r}")
         try:
             dados_sugestoes = _carregar_dados_sugestoes()
             for sug_id in dados_sugestoes.keys():
