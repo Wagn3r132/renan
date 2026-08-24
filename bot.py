@@ -143,9 +143,17 @@ IMAGEM_GRUPO = (
     "?ex=6a850f32&is=6a83bdb2&hm=0b5e19a2b6509d44912a3f3c45e6224a862d3eee630a4841628933ebbd9142ee"
 )
 
+# Cor usada só no embed do painel de lançar convite (rosa, diferente do
+# vermelho padrão do Renan — pedido específico pra esse painel)
+COR_LANCAR_CONVITE = 0xFF66B2
+
 # Imagem usada no painel de lançar convite (opcional — troque pela sua,
 # ou deixe None que o embed sai sem imagem)
-IMAGEM_LANCAR_CONVITE = None
+IMAGEM_LANCAR_CONVITE = (
+    "https://cdn.discordapp.com/attachments/926913851172204577/"
+    "1541498051297026108/ChatGPT_Image_24_de_ago._de_2026_14_22_46.png"
+    "?ex=6a8dcf6f&is=6a8c7def&hm=f00579df52419b65cfde9f5ac0df1099f2e2c92212cf1c70829199db6f42ab53"
+)
 
 # Imagem usada nas instruções de como deixar feedback do atendimento
 IMAGEM_FEEDBACK = (
@@ -2778,7 +2786,7 @@ async def _configurar_painel_lancar_convite() -> None:
             "Depois de enviar a ficha, você escolhe qual cargo de interesse "
             f"marcar — o convite sai publicado em <#{CANAL_DESTINO_LANCAR_CONVITE_ID}>."
         ),
-        color=COR_RENAN,
+        color=COR_LANCAR_CONVITE,
     )
     if IMAGEM_LANCAR_CONVITE:
         embed.set_image(url=IMAGEM_LANCAR_CONVITE)
