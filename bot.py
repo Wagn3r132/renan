@@ -97,6 +97,19 @@ CARGOS_STAFF_IDS = [    # cargos que enxergam e atendem os tickets abertos
     1501260059185774674,  # owner
 ]
 
+# ── Registro de membro (aprovação da staff) ──
+# Sempre que alguém entra no servidor, o Renan pergunta em
+# CANAL_REGISTRO_MEMBRO_ID "Registrar membro?" com botões Sim/Não — só
+# a staff (CARGOS_STAFF_IDS) pode responder. Se aprovado, a pessoa
+# ganha CARGO_REGISTRO_APROVADO_ID.
+CANAL_REGISTRO_MEMBRO_ID = 1501260059701805061
+CARGO_REGISTRO_APROVADO_ID = 1541575317674795119
+
+# Esse aqui é diferente: cargo dado automaticamente pra QUALQUER pessoa
+# assim que entra no servidor, sem depender de aprovação nenhuma da
+# staff (ver on_member_join, mais abaixo).
+CARGO_ENTRADA_AUTOMATICO_ID = 1539324593268064406
+
 # ── Painel de criação de grupos (cargo + categoria + chat + call) ──
 CANAL_PAINEL_GRUPO_ID = 1539085642397384755      # canal onde fica fixado o painel com o botão "Criar Grupo"
 CATEGORIA_REFERENCIA_GRUPO_ID = 1501260062801530902  # a nova categoria do grupo nasce logo abaixo desta
@@ -2169,6 +2182,257 @@ async def cmd_feedback(ctx):
 
     view = _ViewAvaliarAtendimento(ctx.channel.id)
     await ctx.send(content=f"<@{dono_id}>", embed=embed, view=view)
+
+
+# ══════════════════════════════════════════════════════════════════
+# REGISTRO DE MEMBRO (aprovação da staff)
+#
+# Toda vez que alguém entra no servidor, o Renan manda uma pergunta em
+# CANAL_REGISTRO_MEMBRO_ID: "Registrar membro?", com dois botões
+# (✅ Sim / ❌ Não) — só a staff (CARGOS_STAFF_IDS) pode responder.
+# Se a staff clicar Sim, a pessoa ganha CARGO_REGISTRO_APROVADO_ID. Se
+# clicar Não, ninguém ganha cargo nenhum — só fica registrado quem
+# recusou e quando.
+#
+# Isso é INDEPENDENTE do cargo automático de entrada
+# (CARGO_ENTRADA_AUTOMATICO_ID): esse aqui todo mundo ganha na hora
+# que entra, sem depender de aprovação nenhuma (ver _dar_cargo_
+# entrada_automatico, chamada em on_member_join).
+#
+# Cada pergunta é uma view persistente (custom_id carrega o ID do
+# registro, então precisa ser recriada e re-registrada pra cada
+# pergunta ainda pendente sempre que o bot reinicia — mesmo esquema
+# usado pelas sugestões, lá em cima).
+# ══════════════════════════════════════════════════════════════════
+
+_REGISTRO_MEMBRO_DATA_PATH = os.getenv("REGISTRO_MEMBRO_DATA_PATH", "/data/registro_membro.json")
+
+
+def _carregar_dados_registro_membro() -> dict:
+    try:
+        with open(_REGISTRO_MEMBRO_DATA_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _salvar_dados_registro_membro(dados: dict) -> None:
+    try:
+        pasta = os.path.dirname(_REGISTRO_MEMBRO_DATA_PATH)
+        if pasta:
+            os.makedirs(pasta, exist_ok=True)
+        with open(_REGISTRO_MEMBRO_DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        print(f"[renan-registro] não consegui salvar {_REGISTRO_MEMBRO_DATA_PATH}: {e!r}")
+
+
+def _gerar_id_registro() -> str:
+    return uuid.uuid4().hex[:10]
+
+
+async def _dar_cargo_entrada_automatico(member: discord.Member) -> None:
+    """Roda em TODO on_member_join, sem depender da staff: dá
+    CARGO_ENTRADA_AUTOMATICO_ID pra quem acabou de entrar."""
+    if not CARGO_ENTRADA_AUTOMATICO_ID:
+        return
+    cargo = member.guild.get_role(CARGO_ENTRADA_AUTOMATICO_ID)
+    if cargo is None:
+        print(
+            f"[renan-registro] cargo automático de entrada {CARGO_ENTRADA_AUTOMATICO_ID} "
+            f"não encontrado em {member.guild.name}."
+        )
+        return
+    try:
+        await member.add_roles(cargo, reason="Cargo automático de entrada")
+    except discord.Forbidden:
+        print(f"[renan-registro] sem permissão pra dar o cargo automático de entrada em {member}.")
+    except discord.HTTPException as e:
+        print(f"[renan-registro] erro ao dar cargo automático de entrada pra {member}: {e!r}")
+
+
+def _embed_registro_membro(
+    member: discord.Member, status: str = "pendente", respondido_por: discord.Member | None = None
+) -> discord.Embed:
+    """Monta (ou remonta, depois de respondido) o embed da pergunta de
+    registro de UM membro específico."""
+    cores = {"pendente": COR_RENAN, "aprovado": discord.Colour.green(), "negado": discord.Colour.red()}
+    embed = discord.Embed(
+        title="🛂 Registrar membro?",
+        description=f"{member.mention} acabou de entrar. Libera o registro?",
+        color=cores.get(status, COR_RENAN),
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(
+        name="Conta criada em", value=discord.utils.format_dt(member.created_at, style="R"), inline=True
+    )
+    embed.add_field(
+        name="Entrou em",
+        value=discord.utils.format_dt(member.joined_at or discord.utils.utcnow(), style="R"),
+        inline=True,
+    )
+
+    if status == "pendente":
+        embed.add_field(name="Status", value="⏳ Aguardando a staff", inline=False)
+    elif status == "aprovado":
+        quem = respondido_por.mention if respondido_por else "a staff"
+        embed.add_field(name="Status", value=f"✅ Registrado por {quem}", inline=False)
+    else:
+        quem = respondido_por.mention if respondido_por else "a staff"
+        embed.add_field(name="Status", value=f"❌ Negado por {quem}", inline=False)
+
+    embed.set_footer(text="👽 Renan  •  só a staff pode responder essa pergunta")
+    return embed
+
+
+async def _responder_registro_membro(interaction: discord.Interaction, reg_id: str, resposta: str) -> None:
+    """Roda quando a staff clica em Sim/Não na pergunta de registro de
+    algum membro. resposta é 'sim' ou 'nao'."""
+    guild = interaction.guild
+    if guild is None:
+        return
+
+    dados = _carregar_dados_registro_membro()
+    registro = dados.get(reg_id)
+    if registro is None:
+        await interaction.response.send_message("Esse registro não existe mais.", ephemeral=True)
+        return
+
+    if registro.get("respondido"):
+        await interaction.response.send_message(
+            "Essa pergunta já foi respondida por outra pessoa da staff.", ephemeral=True
+        )
+        return
+
+    registro["respondido"] = True
+    registro["resposta"] = resposta
+    registro["respondido_por"] = interaction.user.id
+    registro["respondido_em"] = time.time()
+    _salvar_dados_registro_membro(dados)
+
+    membro = guild.get_member(registro["membro_id"])
+    if membro is None:
+        try:
+            membro = await guild.fetch_member(registro["membro_id"])
+        except discord.HTTPException:
+            membro = None
+
+    view = interaction.view
+    for item in view.children:
+        item.disabled = True
+
+    aviso_erro = None
+    if membro is not None and resposta == "sim":
+        cargo = guild.get_role(CARGO_REGISTRO_APROVADO_ID)
+        if cargo is None:
+            aviso_erro = "Aprovei, mas não achei o cargo de registro configurado — fala com quem mantém o bot."
+            print(
+                f"[renan-registro] cargo de registro {CARGO_REGISTRO_APROVADO_ID} não "
+                f"encontrado em {guild.name}."
+            )
+        else:
+            try:
+                await membro.add_roles(cargo, reason=f"Registro aprovado por {interaction.user}")
+            except discord.Forbidden:
+                aviso_erro = "Aprovei, mas não tenho permissão pra dar o cargo. Confere minha posição no servidor."
+            except discord.HTTPException as e:
+                aviso_erro = "Aprovei, mas deu um erro ao tentar dar o cargo."
+                print(f"[renan-registro] erro ao dar cargo de registro pra {membro}: {e!r}")
+
+    if membro is None:
+        embed = discord.Embed(
+            title="🛂 Registrar membro?",
+            description="Essa pessoa não está mais no servidor — registro cancelado.",
+            color=discord.Colour.dark_grey(),
+        )
+        embed.set_footer(text="👽 Renan  •  registro cancelado")
+    else:
+        embed = _embed_registro_membro(
+            membro, status="aprovado" if resposta == "sim" else "negado", respondido_por=interaction.user
+        )
+
+    await interaction.response.edit_message(embed=embed, view=view)
+
+    if aviso_erro:
+        await interaction.followup.send(aviso_erro, ephemeral=True)
+
+
+class _ViewRegistrarMembro(discord.ui.View):
+    """Botões ✅ Sim / ❌ Não da pergunta de registro de UM membro
+    específico — o custom_id carrega o ID do registro, então precisa
+    ser recriada (e re-registrada) pra cada pergunta pendente sempre
+    que o bot reinicia. Só a staff pode responder (ver
+    interaction_check)."""
+
+    def __init__(self, reg_id: str):
+        super().__init__(timeout=None)
+        self.reg_id = reg_id
+
+        botao_sim = discord.ui.Button(
+            label="Sim",
+            emoji="✅",
+            style=discord.ButtonStyle.success,
+            custom_id=f"renan_registro_sim:{reg_id}",
+        )
+        botao_sim.callback = self._sim
+        self.add_item(botao_sim)
+
+        botao_nao = discord.ui.Button(
+            label="Não",
+            emoji="❌",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"renan_registro_nao:{reg_id}",
+        )
+        botao_nao.callback = self._nao
+        self.add_item(botao_nao)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if isinstance(interaction.user, discord.Member) and _e_staff(interaction.user):
+            return True
+        await interaction.response.send_message(
+            "Só a staff pode liberar (ou não) o registro de alguém.", ephemeral=True
+        )
+        return False
+
+    async def _sim(self, interaction: discord.Interaction):
+        await _responder_registro_membro(interaction, self.reg_id, "sim")
+
+    async def _nao(self, interaction: discord.Interaction):
+        await _responder_registro_membro(interaction, self.reg_id, "nao")
+
+
+async def _perguntar_registro_membro(member: discord.Member) -> None:
+    """Roda em on_member_join: manda a pergunta 'Registrar membro?' em
+    CANAL_REGISTRO_MEMBRO_ID, com os botões Sim/Não pra staff decidir."""
+    if not CANAL_REGISTRO_MEMBRO_ID:
+        return
+    canal = await _garantir_canal(CANAL_REGISTRO_MEMBRO_ID)
+    if canal is None:
+        print(f"[renan-registro] canal {CANAL_REGISTRO_MEMBRO_ID} não encontrado — não perguntei sobre {member}.")
+        return
+
+    reg_id = _gerar_id_registro()
+    embed = _embed_registro_membro(member, status="pendente")
+    view = _ViewRegistrarMembro(reg_id)
+
+    try:
+        mensagem = await canal.send(embed=embed, view=view)
+    except discord.HTTPException as e:
+        print(f"[renan-registro] erro ao mandar a pergunta de registro de {member}: {e!r}")
+        return
+
+    dados = _carregar_dados_registro_membro()
+    dados[reg_id] = {
+        "guild_id": member.guild.id,
+        "canal_id": canal.id,
+        "mensagem_id": mensagem.id,
+        "membro_id": member.id,
+        "respondido": False,
+        "resposta": None,
+        "respondido_por": None,
+        "criado_em": time.time(),
+    }
+    _salvar_dados_registro_membro(dados)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -12646,6 +12910,13 @@ async def on_ready():
                 bot.add_view(_ViewSugestao(sug_id))   # re-registra os botões ✅/❌ de cada sugestão salva
         except Exception as e:
             print(f"[renan-sugestoes] erro ao re-registrar botões de sugestões: {e!r}")
+        try:
+            dados_registro_membro = _carregar_dados_registro_membro()
+            for reg_id, registro in dados_registro_membro.items():
+                if not registro.get("respondido"):
+                    bot.add_view(_ViewRegistrarMembro(reg_id))   # re-registra as perguntas ainda pendentes
+        except Exception as e:
+            print(f"[renan-registro] erro ao re-registrar botões de registro de membro: {e!r}")
         _cargos_configurados = True  # não repete a cada reconexão, só na 1ª vez
 
     for guild in bot.guilds:
@@ -12890,6 +13161,11 @@ async def on_member_join(member: discord.Member):
     o banner de boas-vindas e os direcionamentos pra registro e regras.
     Também dispara a 2ª mensagem de boas-vindas (canal separado, banner
     do demônio) e loga qual convite foi usado pra entrar."""
+    try:
+        await _dar_cargo_entrada_automatico(member)
+    except Exception as e:
+        print(f"[renan-registro] erro ao dar cargo automático de entrada pra {member}: {e!r}")
+
     canal = member.guild.get_channel(CANAL_BOAS_VINDAS_ID)
     if canal is not None:
         descricao = (
@@ -12923,6 +13199,11 @@ async def on_member_join(member: discord.Member):
         await _logar_convite_usado(member)
     except Exception as e:
         print(f"[renan-convites] erro ao logar convite de {member}: {e!r}")
+
+    try:
+        await _perguntar_registro_membro(member)
+    except Exception as e:
+        print(f"[renan-registro] erro ao perguntar sobre registro de {member}: {e!r}")
 
 
 @bot.event
