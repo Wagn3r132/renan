@@ -3961,21 +3961,48 @@ async def _processar_sugestao(message: discord.Message) -> None:
 # No canal CANAL_DIVULGACAO_ITENS_ID, qualquer mensagem (texto e/ou
 # imagem) vira um embed formatado — igual ao que acontece no canal de
 # sugestões: a mensagem original é apagada e substituída. Aqui não tem
-# botão de voto; em vez disso, junto do embed aparece um menu nativo
-# (discord.ui.RoleSelect) com os cargos do servidor, pra quem divulgou
-# escolher qual marcar — pode ser qualquer cargo, escolhido na hora,
-# não precisa configurar nada fixo.
+# botão de voto; em vez disso, junto do embed aparece um menu com TODOS
+# os cargos do servidor, pra quem divulgou escolher qual marcar — não
+# precisa configurar nada fixo, pode ser qualquer cargo.
+#
+# O menu é montado manualmente a partir de guild.roles (em vez de usar
+# o componente nativo discord.ui.RoleSelect) porque um Select comum do
+# Discord só aceita até 25 opções por vez — então aqui a lista é
+# paginada de 25 em 25, com botões ⬅️/➡️, garantindo que TODOS os
+# cargos fiquem alcançáveis, não só os primeiros da lista.
 # ══════════════════════════════════════════════════════════════════
 
-class _SelectCargoDivulgacaoItem(discord.ui.RoleSelect):
-    """Menu nativo de cargos do servidor (o próprio Discord já preenche
-    a lista — não precisa buscar cargo por cargo aqui)."""
+_CARGOS_POR_PAGINA = 25
 
-    def __init__(self):
-        super().__init__(placeholder="Marcar qual cargo?", min_values=1, max_values=1)
+
+def _cargos_selecionaveis(guild: discord.Guild) -> list:
+    """Todos os cargos do servidor, exceto @everyone (esse é tratado à
+    parte pelo próprio Discord). Ordenados da posição mais alta pra
+    mais baixa — mesma ordem da lista de cargos do servidor."""
+    cargos = [cargo for cargo in guild.roles if not cargo.is_default()]
+    cargos.sort(key=lambda cargo: cargo.position, reverse=True)
+    return cargos
+
+
+class _SelectCargoDivulgacaoItem(discord.ui.Select):
+    """Uma página do menu de cargos (até 25 opções — limite do Discord
+    pra um Select comum). Guarda o ID de cada cargo no value da opção
+    pra buscar o objeto Role de verdade só na hora do clique."""
+
+    def __init__(self, cargos_pagina: list):
+        options = [
+            discord.SelectOption(label=cargo.name[:100], value=str(cargo.id))
+            for cargo in cargos_pagina
+        ]
+        super().__init__(placeholder="Marcar qual cargo?", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        cargo = self.values[0]
+        cargo = interaction.guild.get_role(int(self.values[0]))
+        if cargo is None:
+            await interaction.response.send_message(
+                "Esse cargo não existe mais. Tenta escolher outro.", ephemeral=True
+            )
+            return
         await interaction.response.edit_message(
             content=cargo.mention,
             view=None,
@@ -3985,15 +4012,42 @@ class _SelectCargoDivulgacaoItem(discord.ui.RoleSelect):
 
 class _ViewEscolherCargoDivulgacao(discord.ui.View):
     """Aparece junto com o embed de divulgação, logo depois que o item é
-    postado. Só quem divulgou o item pode escolher o cargo; se ninguém
-    escolher em 5 minutos, o menu é desativado e o item fica sem marcar
-    ninguém (o embed em si continua no ar normalmente)."""
+    postado. Pagina os cargos do servidor de 25 em 25 — os botões
+    ⬅️/➡️ só aparecem quando tem mais de uma página. Só quem divulgou o
+    item pode mexer; se ninguém escolher em 5 minutos, tudo é desativado
+    e o item fica sem marcar ninguém (o embed em si continua no ar)."""
 
-    def __init__(self, autor_id: int):
+    def __init__(self, autor_id: int, cargos: list):
         super().__init__(timeout=300)
         self.autor_id = autor_id
+        self.cargos = cargos
+        self.pagina = 0
         self.message: discord.Message | None = None
-        self.add_item(_SelectCargoDivulgacaoItem())
+        self._montar_pagina()
+
+    @property
+    def total_paginas(self) -> int:
+        return max(1, (len(self.cargos) - 1) // _CARGOS_POR_PAGINA + 1)
+
+    def _montar_pagina(self) -> None:
+        self.clear_items()
+        inicio = self.pagina * _CARGOS_POR_PAGINA
+        cargos_pagina = self.cargos[inicio:inicio + _CARGOS_POR_PAGINA]
+        self.add_item(_SelectCargoDivulgacaoItem(cargos_pagina))
+
+        if self.total_paginas > 1:
+            botao_anterior = discord.ui.Button(
+                emoji="⬅️", style=discord.ButtonStyle.secondary, disabled=self.pagina == 0
+            )
+            botao_anterior.callback = self._pagina_anterior
+            self.add_item(botao_anterior)
+
+            botao_proxima = discord.ui.Button(
+                emoji="➡️", style=discord.ButtonStyle.secondary,
+                disabled=self.pagina >= self.total_paginas - 1,
+            )
+            botao_proxima.callback = self._proxima_pagina
+            self.add_item(botao_proxima)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.autor_id:
@@ -4002,6 +4056,16 @@ class _ViewEscolherCargoDivulgacao(discord.ui.View):
             )
             return False
         return True
+
+    async def _pagina_anterior(self, interaction: discord.Interaction):
+        self.pagina = max(0, self.pagina - 1)
+        self._montar_pagina()
+        await interaction.response.edit_message(view=self)
+
+    async def _proxima_pagina(self, interaction: discord.Interaction):
+        self.pagina = min(self.total_paginas - 1, self.pagina + 1)
+        self._montar_pagina()
+        await interaction.response.edit_message(view=self)
 
     async def on_timeout(self) -> None:
         for item in self.children:
@@ -4062,11 +4126,13 @@ async def _processar_divulgacao_item(message: discord.Message) -> None:
     except discord.HTTPException:
         pass
 
-    view = _ViewEscolherCargoDivulgacao(message.author.id)
+    cargos = _cargos_selecionaveis(message.guild)
+    view = _ViewEscolherCargoDivulgacao(message.author.id, cargos) if cargos else None
 
     try:
         nova_mensagem = await message.channel.send(embeds=embeds, files=arquivos_imagem, view=view)
-        view.message = nova_mensagem
+        if view is not None:
+            view.message = nova_mensagem
     except discord.HTTPException as e:
         print(f"[renan-divulgacao] erro ao enviar divulgação de item: {e!r}")
 
