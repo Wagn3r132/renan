@@ -1329,18 +1329,16 @@ async def _configurar_regras() -> None:
     embed.set_image(url=IMAGEM_REGRAS)
     embed.set_footer(text="Renan está observando. As regras também.")
 
-    mensagem_id = _carregar_regras_msg_id()
-    if mensagem_id:
-        try:
-            mensagem = await canal.fetch_message(mensagem_id)
-            await mensagem.edit(embed=embed)
-            return
-        except (discord.NotFound, discord.HTTPException):
-            pass  # mensagem antiga não existe mais — cria uma nova abaixo
-
+    # Mesma proteção anti-duplicata usada nos painéis de ticket/grupo/convite:
+    # tenta o ID salvo em disco e, se não achar (disco sem persistência entre
+    # deploys, por exemplo), cai pra buscar no histórico do canal uma mensagem
+    # do próprio bot com esse mesmo título de embed antes de criar uma nova.
+    dados_painel = {"mensagem_id": _carregar_regras_msg_id()}
     try:
-        nova_mensagem = await canal.send(embed=embed)
-        _salvar_regras_msg_id(nova_mensagem.id)
+        mensagem = await _publicar_ou_reaproveitar_painel(
+            canal, dados_painel, "mensagem_id", embed, discord.utils.MISSING
+        )
+        _salvar_regras_msg_id(mensagem.id)
     except discord.Forbidden:
         print(f"[renan-regras] sem permissão pra enviar mensagem em #{canal.name}.")
 
@@ -1534,17 +1532,15 @@ async def _publicar_ou_atualizar_painel(
     )
     embed.set_footer(text="👽 Reaja pra pegar o cargo  •  tire a reação pra perder")
 
-    info_salva = dados_guild.get(chave)
-    mensagem = None
-    if info_salva and info_salva.get("mensagem_id"):
-        try:
-            mensagem = await canal.fetch_message(info_salva["mensagem_id"])
-            await mensagem.edit(embed=embed)
-        except (discord.NotFound, discord.HTTPException):
-            mensagem = None
-
-    if mensagem is None:
-        mensagem = await canal.send(embed=embed)
+    # Mesma proteção anti-duplicata usada nos painéis de ticket/grupo/convite:
+    # tenta o ID salvo em disco e, se não achar (disco sem persistência entre
+    # deploys, por exemplo), cai pra buscar no histórico do canal uma mensagem
+    # do próprio bot com esse mesmo título de embed antes de criar uma nova.
+    info_salva = dados_guild.get(chave) or {}
+    dados_painel = {"mensagem_id": info_salva.get("mensagem_id")}
+    mensagem = await _publicar_ou_reaproveitar_painel(
+        canal, dados_painel, "mensagem_id", embed, discord.utils.MISSING
+    )
 
     reacoes_atuais = {str(r.emoji) for r in mensagem.reactions}
     for emoji in emoji_para_cargo:
