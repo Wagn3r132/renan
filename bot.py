@@ -105,6 +105,16 @@ CARGOS_STAFF_IDS = [    # cargos que enxergam e atendem os tickets abertos
 CANAL_REGISTRO_MEMBRO_ID = 1501260059701805061
 CARGO_REGISTRO_APROVADO_ID = 1541575317674795119
 
+# Só quem tem um desses cargos (ou é dono do servidor) pode clicar Sim/Não
+# na pergunta de registro — é uma lista separada da CARGOS_STAFF_IDS geral
+# (que também vale pra tickets, etc.), porque aqui é mais restrito.
+CARGOS_REGISTRO_MEMBRO_PERMITIDOS_IDS = [
+    1501260059185774674,
+    1501260059185774673,
+    1501260059185774672,
+    1501260059177648297,
+]
+
 # Canal onde entra a mensagem de boas-vindas "dos bão" pra quem acabou de
 # ser LIBERADO — seja pelo botão ✅ Sim da pergunta de registro (ver
 # _responder_registro_membro) ou pelo comando manual !liberar (ver
@@ -1729,6 +1739,15 @@ def _e_staff(membro: discord.Member) -> bool:
     return bool(ids_dos_cargos.intersection(CARGOS_STAFF_IDS))
 
 
+def _pode_responder_registro_membro(membro: discord.Member) -> bool:
+    """Dono do servidor ou algum dos CARGOS_REGISTRO_MEMBRO_PERMITIDOS_IDS —
+    usado só pra quem pode clicar Sim/Não na pergunta de registro."""
+    if membro.id == membro.guild.owner_id:
+        return True
+    ids_dos_cargos = {cargo.id for cargo in membro.roles}
+    return bool(ids_dos_cargos.intersection(CARGOS_REGISTRO_MEMBRO_PERMITIDOS_IDS))
+
+
 # Categorias do menu de abertura de ticket (aparecem no dropdown, na ordem
 # abaixo). "value" é o que fica salvo/usado internamente (nome do canal,
 # etc.) — "label"/"emoji"/"descricao" são só o que aparece pro usuário.
@@ -2349,14 +2368,22 @@ async def _responder_registro_membro(interaction: discord.Interaction, reg_id: s
     if guild is None:
         return
 
+    # Responde (defer) a interação JÁ, antes de qualquer await de rede
+    # (fetch_member, add_roles etc. logo abaixo). O Discord só dá 3
+    # segundos pra primeira resposta de uma interação — se esse prazo
+    # estoura antes de a gente chamar interaction.response.*, o botão
+    # fica "travado" pro usuário e aparece "Renan não respondeu a
+    # tempo", mesmo que o resto do código termine certinho depois.
+    await interaction.response.defer()
+
     dados = _carregar_dados_registro_membro()
     registro = dados.get(reg_id)
     if registro is None:
-        await interaction.response.send_message("Esse registro não existe mais.", ephemeral=True)
+        await interaction.followup.send("Esse registro não existe mais.", ephemeral=True)
         return
 
     if registro.get("respondido"):
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Essa pergunta já foi respondida por outra pessoa da staff.", ephemeral=True
         )
         return
@@ -2408,7 +2435,7 @@ async def _responder_registro_membro(interaction: discord.Interaction, reg_id: s
             membro, status="aprovado" if resposta == "sim" else "negado", respondido_por=interaction.user
         )
 
-    await interaction.response.edit_message(embed=embed, view=view)
+    await interaction.edit_original_response(embed=embed, view=view)
 
     if aviso_erro:
         await interaction.followup.send(aviso_erro, ephemeral=True)
@@ -2424,8 +2451,9 @@ class _ViewRegistrarMembro(discord.ui.View):
     """Botões ✅ Sim / ❌ Não da pergunta de registro de UM membro
     específico — o custom_id carrega o ID do registro, então precisa
     ser recriada (e re-registrada) pra cada pergunta pendente sempre
-    que o bot reinicia. Só a staff pode responder (ver
-    interaction_check)."""
+    que o bot reinicia. Só quem tem um dos
+    CARGOS_REGISTRO_MEMBRO_PERMITIDOS_IDS (ou é dono do servidor) pode
+    responder (ver interaction_check)."""
 
     def __init__(self, reg_id: str):
         super().__init__(timeout=None)
@@ -2450,10 +2478,10 @@ class _ViewRegistrarMembro(discord.ui.View):
         self.add_item(botao_nao)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if isinstance(interaction.user, discord.Member) and _e_staff(interaction.user):
+        if isinstance(interaction.user, discord.Member) and _pode_responder_registro_membro(interaction.user):
             return True
         await interaction.response.send_message(
-            "Só a staff pode liberar (ou não) o registro de alguém.", ephemeral=True
+            "Você não tem permissão pra liberar (ou não) o registro de alguém.", ephemeral=True
         )
         return False
 
